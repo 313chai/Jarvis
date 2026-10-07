@@ -3,125 +3,171 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f1220">
+<meta name="theme-color" content="#FAF9F5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Jarvis">
 <meta name="robots" content="noindex">
-<title>Jarvis · Comptes</title>
+<title>Jarvis</title>
 <style>
   :root {
-    --bg: #0f1220; --carte: #181c30; --texte: #eef0f8; --doux: #9aa1c0;
-    --accent: #6c63ff; --ok: #3ecf8e; --err: #ff6b6b; --bord: #272c47;
+    --bg: #FAF9F5; --surface: #FFFFFF; --user: #F0EEE6; --text: #1F1E1D; --muted: #73726C;
+    --line: #E6E3D8; --accent: #D97757; --accent-ink: #FFFFFF; --danger: #B5412F;
+    --shadow: 0 1px 2px rgba(31,30,29,.04), 0 8px 24px rgba(31,30,29,.07);
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #262624; --surface: #30302E; --user: #3A3936; --text: #F5F4EE; --muted: #A8A59B;
+      --line: #43413D; --danger: #E58C7C; --shadow: none;
+    }
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { margin: 0; background: var(--bg); color: var(--texte);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  body { min-height: 100dvh; display: flex; flex-direction: column;
-    padding: env(safe-area-inset-top) 16px calc(16px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 14px 0 6px; }
-  h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
-  #etat { font-size: 13px; color: var(--doux); }
-  button { font: inherit; color: inherit; cursor: pointer; }
-  .icone { background: none; border: 0; font-size: 22px; padding: 6px; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
+  button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; padding: 0; }
+  svg { display: block; }
 
-  main { flex: 1; display: flex; flex-direction: column; gap: 14px; padding-top: 8px; }
-  #zone-micro { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 18px 0 4px; }
-  #micro { width: 124px; height: 124px; border-radius: 50%; border: 0; font-size: 46px;
-    background: var(--accent); box-shadow: 0 8px 30px rgba(108,99,255,.45); transition: transform .15s, background .2s; }
-  #micro:active { transform: scale(.96); }
-  #micro.ecoute { background: var(--err); animation: pulse 1.2s infinite; }
-  #micro.reflechit { background: #4a4f7a; animation: tourne 1.4s linear infinite; }
-  #micro.parle { background: var(--ok); }
-  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,107,107,.6); } 100% { box-shadow: 0 0 0 28px rgba(255,107,107,0); } }
-  @keyframes tourne { 0% { opacity: 1; } 50% { opacity: .55; } 100% { opacity: 1; } }
-  #live { min-height: 22px; color: var(--doux); font-size: 15px; text-align: center; }
+  #app { height: 100dvh; display: flex; flex-direction: column; max-width: 640px; margin: 0 auto;
+    padding-top: env(safe-area-inset-top); }
 
-  .carte { background: var(--carte); border: 1px solid var(--bord); border-radius: 16px; padding: 14px 16px; }
-  #reponse { white-space: pre-wrap; font-size: 16px; line-height: 1.45; display: none; }
-  #reponse.erreur { border-color: var(--err); }
-  #chrono { font-size: 12px; color: var(--doux); margin-top: -6px; min-height: 14px; }
-  #annuler { display: none; margin-top: 12px; background: transparent; border: 1px solid var(--bord);
-    border-radius: 10px; padding: 8px 14px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 6px; }
+  .marque { font: 500 22px var(--serif); letter-spacing: .2px; }
+  .barre { display: flex; gap: 4px; }
+  .rond { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; color: var(--muted); }
+  .rond:active { background: var(--user); }
+  .rond[aria-pressed="false"] { opacity: .55; }
 
-  #pastilles { display: flex; flex-wrap: wrap; gap: 8px; }
-  .pastille { background: var(--carte); border: 1px solid var(--bord); border-radius: 999px; padding: 8px 14px; font-size: 14px; }
+  #fil { flex: 1; overflow-y: auto; padding: 8px 18px 12px; -webkit-overflow-scrolling: touch; }
 
-  #saisie { display: flex; gap: 8px; }
-  #texte { flex: 1; background: var(--carte); border: 1px solid var(--bord); color: var(--texte);
-    border-radius: 12px; padding: 12px 14px; font-size: 16px; min-width: 0; }
-  #envoyer { background: var(--accent); border: 0; border-radius: 12px; padding: 0 18px; font-size: 18px; }
+  /* Accueil */
+  #accueil { padding: 12vh 4px 0; }
+  #accueil h1 { font: 400 36px/1.15 var(--serif); margin: 0 0 10px; }
+  #accueil p { margin: 0 0 22px; color: var(--muted); font-size: 16px; line-height: 1.5; }
+  #accueil ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  #accueil li { color: var(--muted); font-size: 15px; padding-left: 14px; border-left: 2px solid var(--line); }
 
-  .options { display: flex; flex-wrap: wrap; gap: 14px; font-size: 14px; color: var(--doux); }
-  .options label { display: flex; align-items: center; gap: 6px; }
+  /* Messages */
+  .msg { margin: 0 0 22px; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .bulle { background: var(--user); padding: 10px 15px; border-radius: 18px 18px 6px 18px; max-width: 85%;
+    font-size: 16px; line-height: 1.4; word-break: break-word; }
+  .titre { font: 400 22px/1.3 var(--serif); display: flex; gap: 10px; align-items: flex-start; }
+  .titre .ic { color: var(--accent); margin-top: 3px; flex: none; }
+  .msg.erreur .titre { font-size: 17px; color: var(--danger); }
+  .msg.erreur .titre .ic { color: var(--danger); }
+  .detail { font-size: 15px; line-height: 1.55; color: var(--muted); margin-top: 3px; }
+  .titre + .detail { margin-top: 6px; }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 12px; opacity: .85; }
+  .actions-msg { margin-top: 12px; display: flex; gap: 8px; }
+  .ghost { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 12px; font-size: 14px; color: var(--text); background: var(--surface); }
+  .ghost:active { background: var(--user); }
 
-  #historique { display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--doux); }
-  .ligne b { color: var(--texte); font-weight: 600; }
+  .options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; max-height: 280px; overflow-y: auto; }
+  .opt { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 9px 15px; font-size: 15px; }
+  .opt:active { background: var(--user); }
+  .opt.neutre { color: var(--muted); background: transparent; }
+  .options.fini .opt { opacity: .45; pointer-events: none; }
+
+  .pensee { display: inline-flex; gap: 5px; padding: 8px 0; }
+  .pensee i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .35; animation: point 1.2s infinite; }
+  .pensee i:nth-child(2) { animation-delay: .15s; } .pensee i:nth-child(3) { animation-delay: .3s; }
+  @keyframes point { 0%, 80%, 100% { opacity: .25; transform: none; } 40% { opacity: 1; transform: translateY(-3px); } }
+
+  /* Bas de page */
+  #dock { padding: 4px 14px calc(12px + env(safe-area-inset-bottom)); }
+  #raccourcis { display: flex; gap: 8px; overflow-x: auto; padding: 4px 4px 12px; scrollbar-width: none; }
+  #raccourcis::-webkit-scrollbar { display: none; }
+  .chip { flex: none; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line);
+    background: var(--surface); border-radius: 999px; padding: 9px 15px 9px 12px; font-size: 14px; font-weight: 500; }
+  .chip .ic { color: var(--accent); }
+  .chip:active { background: var(--user); }
+
+  #composer { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 28px; padding: 6px 6px 6px 20px; box-shadow: var(--shadow); }
+  #texte { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text);
+    font: 16px var(--sans); padding: 10px 0; }
+  #texte::placeholder { color: var(--muted); }
+  #action { width: 44px; height: 44px; flex: none; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+    display: grid; place-items: center; transition: transform .12s; }
+  #action:active { transform: scale(.94); }
+  #action.ecoute { animation: halo 1.3s infinite; }
+  #action.occupe { background: var(--user); color: var(--muted); }
+  #action.occupe svg { animation: tour 1s linear infinite; }
+  @keyframes halo { 0% { box-shadow: 0 0 0 0 rgba(217,119,87,.55); } 100% { box-shadow: 0 0 0 16px rgba(217,119,87,0); } }
+  @keyframes tour { to { transform: rotate(360deg); } }
 
   /* Réglages */
-  #reglages { position: fixed; inset: 0; background: var(--bg); padding: calc(env(safe-area-inset-top) + 16px) 16px 16px;
-    display: none; overflow: auto; z-index: 10; }
+  #reglages { position: fixed; inset: 0; background: var(--bg); display: none; overflow: auto; z-index: 10;
+    padding: calc(env(safe-area-inset-top) + 18px) 20px 24px; }
   #reglages.ouvert { display: block; }
-  #reglages .contenu { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
-  label.champ { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--doux); }
-  input[type=text], input[type=password], input[type=url] { background: var(--carte); border: 1px solid var(--bord);
-    color: var(--texte); border-radius: 12px; padding: 12px 14px; font-size: 16px; width: 100%; }
-  .bouton { background: var(--accent); border: 0; border-radius: 12px; padding: 13px 16px; font-size: 16px; }
-  .bouton.sec { background: var(--carte); border: 1px solid var(--bord); }
-  #msg-reglages { min-height: 20px; font-size: 14px; }
-  small { color: var(--doux); line-height: 1.4; }
+  #reglages .contenu { max-width: 560px; margin: 0 auto; display: grid; gap: 16px; }
+  #reglages h2 { font: 400 28px var(--serif); margin: 4px 0 0; }
+  .note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0; }
+  label.champ { display: grid; gap: 7px; font-size: 14px; color: var(--muted); }
+  select, input[type=url], input[type=password] { width: 100%; background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    border-radius: 12px; padding: 13px 14px; font: 16px var(--sans); }
+  select { appearance: none; -webkit-appearance: none; }
+  .ligne-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 16px; padding: 4px 0; }
+  .ligne-opt input { width: 22px; height: 22px; accent-color: var(--accent); }
+  .btn { background: var(--text); color: var(--bg); border-radius: 12px; padding: 14px 16px; font-size: 16px; font-weight: 500; }
+  .btn.sec { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 400; }
+  #msg-reglages { min-height: 20px; font-size: 14px; color: var(--muted); }
 </style>
 </head>
 <body>
+<div id="app">
+  <header>
+    <div class="marque">Jarvis</div>
+    <div class="barre">
+      <button class="rond" id="btn-voix" aria-label="Réponse vocale" aria-pressed="true"></button>
+      <button class="rond" id="btn-reglages" aria-label="Réglages"></button>
+    </div>
+  </header>
 
-<header>
-  <h1>🎙️ Jarvis · Comptes</h1>
-  <div>
-    <span id="etat"></span>
-    <button class="icone" id="ouvrir-reglages" aria-label="Réglages">⚙️</button>
-  </div>
-</header>
+  <main id="fil">
+    <section id="accueil">
+      <h1 id="salut">Bonjour</h1>
+      <p>Dis une dépense ou une entrée, ou demande un solde.</p>
+      <ul>
+        <li>« sortie 7000 poche repas »</li>
+        <li>« entrée 20000 mvola dons »</li>
+        <li>« combien j'ai dépensé en courses ce mois-ci »</li>
+      </ul>
+    </section>
+  </main>
 
-<main>
-  <section id="zone-micro">
-    <button id="micro" aria-label="Parler">🎤</button>
-    <div id="live">Appuie sur le micro et parle.</div>
-  </section>
-
-  <section id="reponse" class="carte" aria-live="polite"></section>
-  <div id="chrono"></div>
-  <button id="annuler">↩️ Annuler cette ligne</button>
-
-  <section id="pastilles">
-    <button class="pastille" data-q="Combien il me reste en poche ?">👛 Solde poche</button>
-    <button class="pastille" data-q="Quel est mon solde salaire ?">💼 Solde salaire</button>
-    <button class="pastille" data-q="Combien j'ai dépensé en courses ce mois-ci ?">🧾 Courses du mois</button>
-  </section>
-
-  <section id="saisie">
-    <input id="texte" type="text" placeholder="…ou écris ici (ex. sortie 5000 courses)" autocomplete="off" enterkeyhint="send">
-    <button id="envoyer" aria-label="Envoyer">➤</button>
-  </section>
-
-  <section class="options">
-    <label><input type="checkbox" id="voix" checked> Réponse vocale</label>
-    <label><input type="checkbox" id="relire"> Relire avant d'envoyer</label>
-  </section>
-
-  <section id="historique"></section>
-</main>
+  <footer id="dock">
+    <div id="raccourcis"></div>
+    <div id="composer">
+      <input id="texte" type="text" placeholder="Écris ou touche le micro" autocomplete="off" enterkeyhint="send">
+      <button id="action" aria-label="Parler"></button>
+    </div>
+  </footer>
+</div>
 
 <div id="reglages">
   <div class="contenu">
-    <h1>Réglages</h1>
-    <small>Ces deux informations restent uniquement dans ce navigateur, sur cet appareil. Elles ne sont jamais écrites dans la page.</small>
+    <h2>Réglages</h2>
+    <p class="note">Ces informations restent uniquement dans ce navigateur, sur cet appareil. Elles ne sont jamais écrites dans la page.</p>
     <label class="champ">Adresse du script (se termine par /exec, sans « ?s= »)
       <input id="champ-url" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
     </label>
     <label class="champ">Mot de passe
       <input id="champ-pass" type="password" autocomplete="off">
     </label>
+    <label class="champ">Voix de lecture
+      <select id="champ-voix"></select>
+    </label>
+    <button class="btn sec" id="test-voix" type="button">Écouter un exemple</button>
+    <p class="note">Pour une voix plus naturelle : Réglages de l'iPhone, Accessibilité, Contenu énoncé, Voix, Français, puis télécharge une voix « Premium » ou « Améliorée ». Elle apparaîtra ici.</p>
+    <label class="ligne-opt"><span>Relire avant d'envoyer (voix)</span><input type="checkbox" id="opt-relire"></label>
     <div id="msg-reglages"></div>
-    <button class="bouton" id="sauver">Enregistrer et tester</button>
-    <button class="bouton sec" id="fermer">Fermer</button>
-    <button class="bouton sec" id="oublier">Effacer ces réglages de cet appareil</button>
+    <button class="btn" id="sauver">Enregistrer et tester</button>
+    <button class="btn sec" id="fermer">Fermer</button>
+    <button class="btn sec" id="oublier">Effacer ces réglages de cet appareil</button>
   </div>
 </div>
 
@@ -130,57 +176,124 @@
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
 
-  /* ---------- stockage local (protégé par try/catch) ---------- */
+  /* ---------- icônes (traits fins, style Lucide) ---------- */
+  var ICONES = {
+    mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>',
+    send: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    loader: '<path d="M21 12a9 9 0 1 1-6.2-8.55"/>',
+    reglages: '<path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/>',
+    volume: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
+    muet: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
+    annuler: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    alerte: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+    poche: '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+    salaire: '<rect width="20" height="14" x="2" y="7" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+    zeh: '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>',
+    mvola: '<rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/>',
+    especes: '<rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/>'
+  };
+  function svg(nom, taille) {
+    taille = taille || 20;
+    return '<svg class="ic" viewBox="0 0 24 24" width="' + taille + '" height="' + taille +
+      '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      (ICONES[nom] || '') + '</svg>';
+  }
+
+  var RACCOURCIS = [
+    { ic: 'poche',   label: 'Solde poche',   q: 'Solde poche' },
+    { ic: 'salaire', label: 'Solde salaire', q: 'Solde salaire' },
+    { ic: 'zeh',     label: 'Solde ZEH',     q: 'Solde ZEH' },
+    { ic: 'mvola',   label: 'Solde MVola',   q: 'Solde MVola' },
+    { ic: 'especes', label: 'Total espèces', q: 'Total espèces' }
+  ];
+
+  /* ---------- stockage local ---------- */
   var stock = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
     del: function (k) { try { localStorage.removeItem(k); } catch (e) {} }
   };
 
-  var rec = null, ecoute = false, occupe = false, dernierAnnul = null;
+  var rec = null, ecoute = false, occupe = false, attente = null;
+  var voixActive = stock.get('voix') !== '0';
+  var relire = stock.get('relire') === '1';
 
-  /* ---------- interface ---------- */
-  function etat(mode) {
-    var m = $('#micro');
-    m.className = '';
-    if (mode) m.classList.add(mode);
-    var txt = { ecoute: 'J\'écoute…', reflechit: 'Je réfléchis…', parle: 'Je réponds…' }[mode] || '';
-    $('#etat').textContent = txt;
-    m.textContent = mode === 'ecoute' ? '⏹' : mode === 'reflechit' ? '⏳' : mode === 'parle' ? '🔊' : '🎤';
+  /* ---------- outils d'affichage ---------- */
+  function sansEmoji(t) {
+    return String(t || '').replace(/[\u{1F000}-\u{1FFFF}\u{2190}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu, '').replace(/[ \t]+/g, ' ').trim();
+  }
+  function sec(ms) { return (ms / 1000).toFixed(1).replace('.', ',') + ' s'; }
+  function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  function defiler() { requestAnimationFrame(function () { var f = $('#fil'); f.scrollTop = f.scrollHeight; }); }
+
+  function ajouter(noeud) {
+    var a = $('#accueil'); if (a) a.remove();
+    var fil = $('#fil');
+    fil.appendChild(noeud);
+    while (fil.children.length > 14) fil.removeChild(fil.firstChild);
+    defiler();
+  }
+  function retirerUndo() {
+    Array.prototype.forEach.call(document.querySelectorAll('.undo'), function (b) { b.parentNode.remove(); });
+  }
+  function figerOptions() {
+    Array.prototype.forEach.call(document.querySelectorAll('.options'), function (o) { o.classList.add('fini'); });
   }
 
-  function afficher(r) {
-    var c = $('#reponse');
-    c.style.display = 'block';
-    c.textContent = r.text || '';
-    c.className = 'carte' + (r.ok ? '' : ' erreur');
-    var ch = '', d = r.diag;
-    if (d) {
-      var sec = function (ms) { return (ms / 1000).toFixed(1).replace('.', ',') + ' s'; };
-      ch = (d.via === 'rapide' ? '⚡ sans IA' : '🧠 IA' + (d.modele ? ' (' + d.modele + ', ' + sec(d.msIA) + ')' : '')) +
-           ' · script ' + sec(d.ms) + (r.total ? ' · total ' + sec(r.total) : '') + (r.essais > 1 ? ' · 2e essai' : '');
+  function msgUtilisateur(texte) {
+    var m = el('div', 'msg user'); var b = el('div', 'bulle'); b.textContent = texte; m.appendChild(b); ajouter(m);
+  }
+  function msgPensee() {
+    var m = el('div', 'msg assistant'); m.appendChild(el('div', 'pensee', '<i></i><i></i><i></i>')); ajouter(m); return m;
+  }
+
+  function msgAssistant(r) {
+    var m = el('div', 'msg assistant' + (r.ok ? '' : ' erreur'));
+    var lignes = sansEmoji(r.text).split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+    var titre = el('div', 'titre');
+    var pic = !r.ok ? 'alerte' : (r.undoId ? 'check' : '');
+    if (pic) titre.insertAdjacentHTML('beforeend', svg(pic, 20));
+    var t = el('span'); t.textContent = lignes[0] || ''; titre.appendChild(t);
+    m.appendChild(titre);
+    lignes.slice(1).forEach(function (l) { var d = el('div', 'detail'); d.textContent = l; m.appendChild(d); });
+
+    // Question avec boutons (champ obligatoire manquant)
+    if (r.ask) {
+      var box = el('div', 'options');
+      (r.ask.options || []).forEach(function (o) {
+        var b = el('button', 'opt'); b.type = 'button'; b.textContent = o.label;
+        b.onclick = function () { choisir(r.ask.champ, o); };
+        box.appendChild(b);
+      });
+      var stop = el('button', 'opt neutre'); stop.type = 'button'; stop.textContent = 'Annuler la saisie';
+      stop.onclick = function () { attente = null; figerOptions(); noteAnnulee(); };
+      box.appendChild(stop);
+      if (r.ask.options && r.ask.options.length) m.appendChild(box); else {
+        // montant : réponse libre, on laisse la zone de texte
+        var aide = el('div', 'detail'); aide.textContent = 'Écris ou dis le montant.'; m.appendChild(aide);
+        var seul = el('div', 'options'); seul.appendChild(stop); m.appendChild(seul);
+      }
     }
-    $('#chrono').textContent = ch;
-    dernierAnnul = r.undoId || null;
-    $('#annuler').style.display = dernierAnnul ? 'inline-block' : 'none';
-  }
 
-  function historique(q, r) {
-    var h = $('#historique');
-    var d = document.createElement('div');
-    d.className = 'ligne';
-    var b = document.createElement('b');
-    b.textContent = '› ' + q;
-    var s = document.createElement('div');
-    s.textContent = (r.text || '').split('\n').slice(0, 2).join(' — ');
-    d.appendChild(b); d.appendChild(s);
-    h.insertBefore(d, h.firstChild);
-    while (h.children.length > 6) h.removeChild(h.lastChild);
+    if (r.undoId) {
+      var ac = el('div', 'actions-msg');
+      var u = el('button', 'ghost undo', svg('annuler', 16) + '<span>Annuler cette ligne</span>');
+      u.type = 'button'; u.onclick = function () { retirerUndo(); traiter({ action: 'annuler', undoId: r.undoId }); };
+      ac.appendChild(u); m.appendChild(ac);
+    }
+    if (r.diag) {
+      var d = r.diag;
+      var meta = (d.via === 'rapide' ? 'Sans IA' : 'IA' + (d.modele ? ' (' + d.modele + ', ' + sec(d.msIA) + ')' : '')) +
+        ' · script ' + sec(d.ms) + (r.total ? ' · total ' + sec(r.total) : '') + (r.essais > 1 ? ' · 2e essai' : '');
+      m.appendChild(el('div', 'meta', meta));
+    }
+    ajouter(m);
   }
+  function noteAnnulee() { var m = el('div', 'msg assistant'); m.appendChild(el('div', 'detail', 'Saisie annulée.')); ajouter(m); }
 
-  /* ---------- appel du script ---------- */
-  // Un appel = une demande (rid) ; en cas de coupure ou de page d'erreur Google, on réessaie UNE fois avec le même rid
-  // (le script reconnaît le rid et ne réécrit jamais deux fois la même ligne).
+  /* ---------- appel du script (avec anti-doublon et un réessai) ---------- */
   function api(payload) {
     var url = stock.get('url'), pass = stock.get('pass');
     if (!url || !pass) { ouvrirReglages(); return Promise.reject(new Error('Renseigne d\'abord les réglages.')); }
@@ -196,18 +309,12 @@
     }
     return essai(0);
   }
-
   function unAppel(url, corps) {
-    var statut = 0;
-    var ctrl = new AbortController();
+    var statut = 0, ctrl = new AbortController();
     var t = setTimeout(function () { ctrl.abort(); }, 45000);
-    return fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },  // évite la pré-requête CORS
-      body: JSON.stringify(corps),
-      redirect: 'follow',
-      signal: ctrl.signal
-    }).then(function (res) { statut = res.status; return res.text(); })
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(corps), redirect: 'follow', signal: ctrl.signal })
+      .then(function (res) { statut = res.status; return res.text(); })
       .then(function (txt) {
         clearTimeout(t);
         try { return JSON.parse(txt); }
@@ -215,8 +322,7 @@
           var extrait = txt.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
             .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim().slice(0, 180);
           var err = new Error('Google a répondu autre chose que prévu (code ' + statut + ') : « ' + extrait + ' »');
-          err.reessayer = true;
-          throw err;
+          err.reessayer = true; throw err;
         }
       })
       .catch(function (e) {
@@ -228,57 +334,107 @@
   }
 
   /* ---------- voix de sortie ---------- */
-  function choisirVoix() {
+  function voixFr() {
     var vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
-    var fr = vs.filter(function (v) { return /^fr/i.test(v.lang); });
-    return fr.filter(function (v) { return /fr[-_]FR/i.test(v.lang); })[0] || fr[0] || null;
+    return vs.filter(function (v) { return /^fr/i.test(v.lang); });
   }
-  if (window.speechSynthesis) speechSynthesis.onvoiceschanged = function () {};
-
+  function score(v) {   // qualité : Premium > Améliorée > standard
+    var s = 0;
+    if (/premium/i.test(v.name)) s += 100;
+    if (/enhanced|am[ée]lior/i.test(v.name)) s += 60;
+    if (/fr[-_]FR/i.test(v.lang)) s += 10;
+    if (/siri/i.test(v.name)) s += 5;
+    return s;
+  }
+  function choisirVoix() {
+    var fr = voixFr(), choisie = stock.get('voixNom');
+    if (choisie) { var c = fr.filter(function (v) { return v.name === choisie; })[0]; if (c) return c; }
+    return fr.slice().sort(function (a, b) { return score(b) - score(a); })[0] || null;
+  }
+  function remplirVoix() {
+    var s = $('#champ-voix'); if (!s) return;
+    var courante = stock.get('voixNom') || '';
+    s.innerHTML = '';
+    var auto = el('option'); auto.value = ''; auto.textContent = 'Automatique (la plus naturelle installée)'; s.appendChild(auto);
+    voixFr().sort(function (a, b) { return score(b) - score(a); }).forEach(function (v) {
+      var o = el('option'); o.value = v.name; o.textContent = v.name + ' (' + v.lang + ')'; s.appendChild(o);
+    });
+    s.value = courante;
+  }
+  if (window.speechSynthesis) speechSynthesis.onvoiceschanged = remplirVoix;
+  var voixDebloquee = false;
+  function debloquerVoix() {   // iOS exige un premier son déclenché par un geste de l'utilisateur
+    if (voixDebloquee || !window.speechSynthesis) return;
+    voixDebloquee = true;
+    try { var u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) {}
+  }
   function parler(texte) {
-    if (!window.speechSynthesis || !texte) return;
+    if (!voixActive || !window.speechSynthesis || !texte) return;
     speechSynthesis.cancel();
     var u = new SpeechSynthesisUtterance(texte);
     u.lang = 'fr-FR';
-    var v = choisirVoix(); if (v) u.voice = v;
-    u.onstart = function () { etat('parle'); };
-    u.onend = u.onerror = function () { if (!occupe && !ecoute) etat(''); };
-    speechSynthesis.speak(u);
+    try { var v = choisirVoix(); if (v) u.voice = v; } catch (e) {}   // une voix qui pose problème ne doit jamais bloquer la réponse
+    try { speechSynthesis.speak(u); } catch (e) {}
   }
 
-  /* ---------- envoi d'un message ---------- */
+  /* ---------- envoi et réponses ---------- */
+  function majBouton() {
+    var b = $('#action');
+    var aTexte = $('#texte').value.trim().length > 0;
+    b.className = ecoute ? 'ecoute' : (occupe ? 'occupe' : '');
+    var nom = occupe ? 'loader' : ecoute ? 'stop' : aTexte ? 'send' : 'mic';
+    b.innerHTML = svg(nom, 22);
+    b.setAttribute('aria-label', occupe ? 'Patiente' : ecoute ? 'Arrêter' : aTexte ? 'Envoyer' : 'Parler');
+  }
+
+  function traiter(payload) {
+    occupe = true; majBouton();
+    var pensee = msgPensee();
+    return api(payload).then(function (r) {
+      pensee.remove();
+      if (r.ask) attente = { champ: r.ask.champ, pending: r.pending };
+      else if (r.ok) attente = null;
+      msgAssistant(r);
+      parler(r.parle);
+      if (r.auth === false) ouvrirReglages('Mot de passe refusé : corrige-le ci-dessous.');
+    }).catch(function (e) {
+      pensee.remove();
+      msgAssistant({ ok: false, text: e.message });
+    }).then(function () { occupe = false; majBouton(); });
+  }
+
+  function choisir(champ, option) {
+    if (occupe || !attente) return;
+    figerOptions();
+    msgUtilisateur(option.label);
+    traiter({ action: 'completer', pending: attente.pending, champ: champ, valeur: option.valeur });
+  }
+
   function envoyer(texte) {
     texte = (texte || '').trim();
     if (!texte || occupe) return;
-    occupe = true; etat('reflechit');
-    $('#live').textContent = '« ' + texte + ' »';
-    api({ action: 'message', texte: texte })
-      .then(function (r) {
-        afficher(r); historique(texte, r);
-        occupe = false; etat('');
-        if ($('#voix').checked && r.parle) parler(r.parle);
-        if (r.auth === false) ouvrirReglages('Mot de passe refusé : corrige-le ci-dessous.');
-      })
-      .catch(function (e) {
-        occupe = false; etat('');
-        afficher({ ok: false, text: '⚠️ ' + e.message });
-      });
+    debloquerVoix();
+    retirerUndo(); figerOptions();
+    msgUtilisateur(texte);
+    $('#texte').value = ''; majBouton();
+    if (attente && attente.champ === 'montant') {
+      traiter({ action: 'completer', pending: attente.pending, champ: 'montant', valeur: texte });
+    } else {
+      attente = null;
+      traiter({ action: 'message', texte: texte });
+    }
   }
 
   /* ---------- reconnaissance vocale ---------- */
   function demarrerEcoute() {
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      afficher({ ok: false, text: '⚠️ Ce navigateur ne gère pas la reconnaissance vocale. Utilise Chrome, ou écris ton message.' });
-      return;
-    }
+    if (!SR) { msgAssistant({ ok: false, text: 'Ce navigateur ne gère pas la reconnaissance vocale. Utilise Safari ou Chrome, ou écris ton message.' }); return; }
+    debloquerVoix();
     if (window.speechSynthesis) speechSynthesis.cancel();
     rec = new SR();
-    rec.lang = 'fr-FR';
-    rec.interimResults = true;
-    rec.continuous = false;
-    rec.maxAlternatives = 1;
-    var final = '', erreur = null;
+    rec.lang = 'fr-FR'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
+    var final = '', erreur = null, champ = $('#texte');
+    champ.value = ''; champ.placeholder = 'J\'écoute…';
 
     rec.onresult = function (e) {
       var interim = '';
@@ -286,95 +442,103 @@
         var t = e.results[i][0].transcript;
         if (e.results[i].isFinal) final += t; else interim += t;
       }
-      $('#live').textContent = (final + interim) || '…';
+      champ.value = final + interim;
     };
     rec.onerror = function (e) {
       erreur = e.error;
       var m = {
-        'not-allowed': 'Micro refusé : autorise le micro pour ce site (icône à gauche de l\'adresse).',
-        'service-not-allowed': 'Micro refusé : autorise le micro pour ce site.',
+        'not-allowed': 'Micro refusé : autorise le micro pour ce site dans les réglages de Safari.',
+        'service-not-allowed': 'Micro refusé : autorise le micro et la dictée dans les réglages de ton iPhone.',
         'no-speech': 'Je n\'ai rien entendu. Réessaie.',
         'audio-capture': 'Aucun micro détecté.',
         'network': 'La reconnaissance vocale a besoin d\'Internet.'
       }[e.error];
-      if (m) afficher({ ok: false, text: '⚠️ ' + m });
+      if (m) msgAssistant({ ok: false, text: m });
     };
     rec.onend = function () {
-      ecoute = false; etat('');
-      var t = final.trim();
-      if (!t) { if (!erreur) $('#live').textContent = 'Rien entendu. Réessaie.'; return; }
-      if ($('#relire').checked) { $('#texte').value = t; $('#live').textContent = 'Vérifie le texte puis envoie ➤'; }
-      else envoyer(t);
+      ecoute = false; champ.placeholder = 'Écris ou touche le micro';
+      var t = (final || champ.value).trim();
+      champ.value = t; majBouton();
+      if (!t) return;
+      if (relire) { champ.focus(); } else { envoyer(t); }
     };
-    try { rec.start(); ecoute = true; etat('ecoute'); $('#live').textContent = '…'; }
-    catch (e) { ecoute = false; etat(''); }
+    try { rec.start(); ecoute = true; majBouton(); }
+    catch (e) { ecoute = false; majBouton(); }
   }
 
   /* ---------- réglages ---------- */
   function ouvrirReglages(msg) {
     $('#champ-url').value = stock.get('url') || '';
     $('#champ-pass').value = stock.get('pass') || '';
+    $('#opt-relire').checked = relire;
+    remplirVoix();
     $('#msg-reglages').textContent = msg || '';
     $('#reglages').classList.add('ouvert');
   }
   function fermerReglages() { $('#reglages').classList.remove('ouvert'); }
 
-  $('#ouvrir-reglages').onclick = function () { ouvrirReglages(); };
+  $('#btn-reglages').onclick = function () { ouvrirReglages(); };
   $('#fermer').onclick = fermerReglages;
+  $('#champ-voix').onchange = function () { if (this.value) stock.set('voixNom', this.value); else stock.del('voixNom'); };
+  $('#test-voix').onclick = function () {
+    debloquerVoix();
+    var ancienne = voixActive; voixActive = true;
+    parler('Bonjour. Il vous reste trois cent mille ariary en poche.');
+    voixActive = ancienne;
+  };
+  $('#opt-relire').onchange = function () { relire = this.checked; stock.set('relire', relire ? '1' : '0'); };
   $('#oublier').onclick = function () {
     stock.del('url'); stock.del('pass');
     $('#champ-url').value = ''; $('#champ-pass').value = '';
     $('#msg-reglages').textContent = 'Réglages effacés de cet appareil.';
   };
   $('#sauver').onclick = function () {
-    var url = $('#champ-url').value.trim(), pass = $('#champ-pass').value;
-    var msg = $('#msg-reglages');
+    var url = $('#champ-url').value.trim(), pass = $('#champ-pass').value, msg = $('#msg-reglages');
     if (!/^https:\/\/script\.google\.com\/macros\/s\/[^?\s]+\/exec$/.test(url)) {
-      msg.textContent = '⚠️ L\'adresse doit ressembler à https://script.google.com/macros/s/…/exec (sans « ?s= »).'; return;
+      msg.textContent = 'L\'adresse doit ressembler à https://script.google.com/macros/s/…/exec (sans « ?s= »).'; return;
     }
-    if (!pass) { msg.textContent = '⚠️ Saisis le mot de passe.'; return; }
+    if (!pass) { msg.textContent = 'Saisis le mot de passe.'; return; }
     stock.set('url', url); stock.set('pass', pass);
     msg.textContent = 'Test en cours…';
     api({ action: 'ping' })
       .then(function (r) {
-        if (r.ok) { msg.textContent = '✅ Connexion OK.'; setTimeout(fermerReglages, 700); }
-        else msg.textContent = '⚠️ ' + (r.text || 'Échec.');
+        if (r.ok) { msg.textContent = 'Connexion OK.'; setTimeout(fermerReglages, 700); }
+        else msg.textContent = r.text || 'Échec.';
       })
-      .catch(function (e) { msg.textContent = '⚠️ ' + e.message; });
+      .catch(function (e) { msg.textContent = e.message; });
   };
 
-  /* ---------- événements ---------- */
-  $('#micro').onclick = function () {
+  /* ---------- mise en place ---------- */
+  function majVoixBtn() {
+    var b = $('#btn-voix');
+    b.innerHTML = svg(voixActive ? 'volume' : 'muet', 22);
+    b.setAttribute('aria-pressed', voixActive ? 'true' : 'false');
+    b.setAttribute('aria-label', voixActive ? 'Réponse vocale activée' : 'Réponse vocale coupée');
+  }
+  $('#btn-voix').onclick = function () {
+    voixActive = !voixActive; stock.set('voix', voixActive ? '1' : '0'); majVoixBtn();
+    if (!voixActive && window.speechSynthesis) speechSynthesis.cancel();
+  };
+  $('#btn-reglages').innerHTML = svg('reglages', 22);
+  majVoixBtn(); majBouton();
+
+  RACCOURCIS.forEach(function (r) {
+    var b = el('button', 'chip', svg(r.ic, 18) + '<span>' + r.label + '</span>');
+    b.type = 'button'; b.onclick = function () { envoyer(r.q); };
+    $('#raccourcis').appendChild(b);
+  });
+
+  $('#salut').textContent = new Date().getHours() < 18 ? 'Bonjour' : 'Bonsoir';
+  $('#texte').addEventListener('input', majBouton);
+  $('#texte').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); envoyer($('#texte').value); } });
+  $('#action').onclick = function () {
     if (occupe) return;
     if (ecoute && rec) { rec.stop(); return; }
-    demarrerEcoute();
-  };
-  $('#envoyer').onclick = function () { var t = $('#texte').value; $('#texte').value = ''; envoyer(t); };
-  $('#texte').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); $('#envoyer').click(); }
-  });
-  Array.prototype.forEach.call(document.querySelectorAll('.pastille'), function (p) {
-    p.onclick = function () { envoyer(p.getAttribute('data-q')); };
-  });
-  $('#annuler').onclick = function () {
-    if (!dernierAnnul || occupe) return;
-    var id = dernierAnnul;
-    occupe = true; etat('reflechit');
-    api({ action: 'annuler', undoId: id })
-      .then(function (r) {
-        occupe = false; etat('');
-        afficher(r);
-        if ($('#voix').checked && r.parle) parler(r.parle);
-      })
-      .catch(function (e) { occupe = false; etat(''); afficher({ ok: false, text: '⚠️ ' + e.message }); });
+    if ($('#texte').value.trim()) envoyer($('#texte').value); else demarrerEcoute();
   };
 
-  if (stock.get('url') && stock.get('pass')) {   // réveille le script et mesure le temps de base (réseau + démarrage)
-    api({ action: 'ping' }).then(function (r) {
-      if (r && r.ok && !$('#chrono').textContent) $('#chrono').textContent = '📡 script joint en ' + (r.total / 1000).toFixed(1).replace('.', ',') + ' s';
-    }).catch(function () {});
-  }
-  if (!stock.get('url') || !stock.get('pass')) ouvrirReglages('Première utilisation : renseigne l\'adresse du script et ton mot de passe.');
+  if (stock.get('url') && stock.get('pass')) api({ action: 'ping' }).catch(function () {});   // réveille le script
+  else ouvrirReglages('Première utilisation : renseigne l\'adresse du script et ton mot de passe.');
 })();
 </script>
 </body>
