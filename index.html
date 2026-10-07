@@ -1,763 +1,362 @@
-/**
- * AGENT COMPTES — Telegram + Gemini (gratuit) + Google Sheets
- * Outils : ajouter_ligne, solde, depenses_categorie
- *
- * Propriétés du script à créer (Paramètres du projet > Propriétés du script) :
- *   TELEGRAM_TOKEN, GEMINI_KEY, CHAT_ID, WEBHOOK_SECRET
- *   WEBAPP_URL   (URL du déploiement finissant par /exec, ajoutée après l'étape de déploiement)
- *   WEB_PASSWORD (mot de passe long de la page vocale ; à saisir une fois sur le téléphone)
- *   SHEET_ID     (optionnel : à ne remplir que si le script n'est pas lié au fichier)
- *   GEMINI_MODEL (optionnel : remplace le modèle par défaut ci-dessous)
- */
-
-const CFG = {
-  SHEET_ESPECES: 'BDD ARIARY ESPECES',
-  SHEET_BANQUE: 'BDD ARIARY BANQUE',
-  SHEET_PARAMS: 'PARAMETRES',
-  PARAMS_COL_CATEGORIES: 3,            // colonne C de PARAMETRES
-  TZ_USER: 'Indian/Antananarivo',      // sert uniquement à déterminer "aujourd'hui"
-  DEFAULT_MODEL: 'gemini-3.5-flash-lite', // le plus rapide et le moins saturé en premier
-  FALLBACK_MODEL: 'gemini-3.7-flash',     // utilisé si le premier est saturé
-};
-
-const MOIS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet',
-  'août', 'septembre', 'octobre', 'novembre', 'décembre'];
-
-class UserError extends Error {}
-
-/* ======================= Utilitaires ======================= */
-
-function prop_(k) { return PropertiesService.getScriptProperties().getProperty(k); }
-
-function getSS_() {
-  const id = prop_('SHEET_ID');
-  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
-}
-
-function norm_(s) {
-  return String(s == null ? '' : s).trim().toUpperCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-}
-
-function fmt_(n) {
-  const neg = n < 0;
-  const abs = Math.abs(Math.round(n * 100) / 100);
-  const parts = String(abs).split('.');
-  const ent = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  return (neg ? '-' : '') + ent + (parts[1] ? ',' + (parts[1] + '0').slice(0, 2) : '') + ' Ar';
-}
-
-function aujourdhui_() {
-  return Utilities.formatDate(new Date(), CFG.TZ_USER, 'yyyy-MM-dd');
-}
-
-/* ======================= Telegram ======================= */
-
-function tg_(method, payload) {
-  const res = UrlFetchApp.fetch('https://api.telegram.org/bot' + prop_('TELEGRAM_TOKEN') + '/' + method, {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload || {}),
-    muteHttpExceptions: true,
-  });
-  return JSON.parse(res.getContentText());
-}
-
-function envoyer_(chatId, texte, boutons) {
-  const p = { chat_id: chatId, text: texte };
-  if (boutons) p.reply_markup = { inline_keyboard: boutons };
-  const r = tg_('sendMessage', p);
-  if (!r.ok) console.error('Telegram sendMessage a échoué : ' + JSON.stringify(r));
-  return r;
-}
-
-function telechargerFichier_(fileId) {
-  const info = tg_('getFile', { file_id: fileId });
-  if (!info.ok) throw new Error('getFile a échoué : ' + JSON.stringify(info));
-  const res = UrlFetchApp.fetch(
-    'https://api.telegram.org/file/bot' + prop_('TELEGRAM_TOKEN') + '/' + info.result.file_path);
-  return Utilities.base64Encode(res.getContent());
-}
-
-/* ======================= Point d'entrée (webhook) ======================= */
-
-function doGet() {
-  return ContentService.createTextOutput('OK');
-}
-
-function doPost(e) {
-  const ok = ContentService.createTextOutput('OK');
-  // Canal « page web vocale » : corps JSON avec canal = 'web' (le mot de passe est vérifié dans traiterWeb_)
-  const corps = lireCorps_(e);
-  if (corps && corps.canal === 'web') return jsonOut_(traiterWeb_(corps));
-  // 1) code secret dans l'URL : sinon on ignore silencieusement
-  if (!e || !e.parameter || e.parameter.s !== prop_('WEBHOOK_SECRET')) {
-    console.log('IGNORÉ : code secret absent ou incorrect dans l\'URL du webhook');
-    return ok;
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1220">
+<meta name="robots" content="noindex">
+<title>Jarvis · Comptes</title>
+<style>
+  :root {
+    --bg: #0f1220; --carte: #181c30; --texte: #eef0f8; --doux: #9aa1c0;
+    --accent: #6c63ff; --ok: #3ecf8e; --err: #ff6b6b; --bord: #272c47;
   }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--texte);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100dvh; display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) 16px calc(16px + env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 14px 0 6px; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  #etat { font-size: 13px; color: var(--doux); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .icone { background: none; border: 0; font-size: 22px; padding: 6px; }
 
-  const lock = LockService.getScriptLock();
-  try {
-    const update = JSON.parse(e.postData.contents);
-    // 2) anti-doublon (Telegram renvoie le même message à cause de la redirection 302) :
-    //    on le vérifie AVANT d'attendre le verrou, pour que les doublons repartent tout de suite
-    const cache = CacheService.getScriptCache();
-    const cle = 'upd_' + update.update_id;
-    if (cache.get(cle)) { console.log('IGNORÉ : doublon (update ' + update.update_id + ' déjà traité)'); return ok; }
-    lock.waitLock(25000);
-    if (cache.get(cle)) { console.log('IGNORÉ : doublon (update ' + update.update_id + ' déjà traité)'); return ok; }
-    cache.put(cle, '1', 21600);
-    console.log('REÇU : update ' + update.update_id + (update.callback_query ? ' (bouton)' : ' (message)'));
+  main { flex: 1; display: flex; flex-direction: column; gap: 14px; padding-top: 8px; }
+  #zone-micro { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 18px 0 4px; }
+  #micro { width: 124px; height: 124px; border-radius: 50%; border: 0; font-size: 46px;
+    background: var(--accent); box-shadow: 0 8px 30px rgba(108,99,255,.45); transition: transform .15s, background .2s; }
+  #micro:active { transform: scale(.96); }
+  #micro.ecoute { background: var(--err); animation: pulse 1.2s infinite; }
+  #micro.reflechit { background: #4a4f7a; animation: tourne 1.4s linear infinite; }
+  #micro.parle { background: var(--ok); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255,107,107,.6); } 100% { box-shadow: 0 0 0 28px rgba(255,107,107,0); } }
+  @keyframes tourne { 0% { opacity: 1; } 50% { opacity: .55; } 100% { opacity: 1; } }
+  #live { min-height: 22px; color: var(--doux); font-size: 15px; text-align: center; }
 
-    if (update.callback_query) traiterBouton_(update.callback_query);
-    else if (update.message) traiterMessage_(update.message);
-  } catch (err) {
-    console.error(err && err.stack ? err.stack : err);
-  } finally {
-    try { lock.releaseLock(); } catch (_) { /* rien */ }
-  }
-  return ok;
-}
+  .carte { background: var(--carte); border: 1px solid var(--bord); border-radius: 16px; padding: 14px 16px; }
+  #reponse { white-space: pre-wrap; font-size: 16px; line-height: 1.45; display: none; }
+  #reponse.erreur { border-color: var(--err); }
+  #chrono { font-size: 12px; color: var(--doux); margin-top: -6px; min-height: 14px; }
+  #annuler { display: none; margin-top: 12px; background: transparent; border: 1px solid var(--bord);
+    border-radius: 10px; padding: 8px 14px; }
 
-/* ======================= Canal web (page vocale) ======================= */
+  #pastilles { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pastille { background: var(--carte); border: 1px solid var(--bord); border-radius: 999px; padding: 8px 14px; font-size: 14px; }
 
-function lireCorps_(e) {
-  try { return JSON.parse(e.postData.contents); } catch (_) { return null; }
-}
+  #saisie { display: flex; gap: 8px; }
+  #texte { flex: 1; background: var(--carte); border: 1px solid var(--bord); color: var(--texte);
+    border-radius: 12px; padding: 12px 14px; font-size: 16px; min-width: 0; }
+  #envoyer { background: var(--accent); border: 0; border-radius: 12px; padding: 0 18px; font-size: 18px; }
 
-function jsonOut_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
-}
+  .options { display: flex; flex-wrap: wrap; gap: 14px; font-size: 14px; color: var(--doux); }
+  .options label { display: flex; align-items: center; gap: 6px; }
 
-// Version « à lire à voix haute » : sans émojis, sans séparateurs, montants lisibles
-function vocal_(t) {
-  return String(t)
-    .replace(/[\u{1F000}-\u{1FFFF}\u{2190}-\u{27BF}\u{FE0F}]/gu, '')
-    .replace(/(\d) (?=\d{3}(\D|$))/g, '$1')
-    .replace(/ Ar\b/g, ' ariary')
-    .replace(/\s*·\s*/g, ', ')
-    .replace(/\s*\n\s*/g, '. ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+  #historique { display: flex; flex-direction: column; gap: 8px; font-size: 14px; color: var(--doux); }
+  .ligne b { color: var(--texte); font-weight: 600; }
 
-function traiterWeb_(c) {
-  const t0 = Date.now();
-  DIAG_ = {};
-  const cache = CacheService.getScriptCache();
-  const echecs = Number(cache.get('web_echecs') || 0);
-  if (echecs >= 5) return { ok: false, auth: false, text: 'Trop d\'essais. Réessaie dans 10 minutes.' };
-  const mdp = prop_('WEB_PASSWORD');
-  if (!mdp || c.pass !== mdp) {
-    cache.put('web_echecs', String(echecs + 1), 600);
-    console.log('WEB : mot de passe refusé');
-    return { ok: false, auth: false, text: 'Mot de passe incorrect.' };
-  }
-  cache.remove('web_echecs');
+  /* Réglages */
+  #reglages { position: fixed; inset: 0; background: var(--bg); padding: calc(env(safe-area-inset-top) + 16px) 16px 16px;
+    display: none; overflow: auto; z-index: 10; }
+  #reglages.ouvert { display: block; }
+  #reglages .contenu { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+  label.champ { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--doux); }
+  input[type=text], input[type=password], input[type=url] { background: var(--carte); border: 1px solid var(--bord);
+    color: var(--texte); border-radius: 12px; padding: 12px 14px; font-size: 16px; width: 100%; }
+  .bouton { background: var(--accent); border: 0; border-radius: 12px; padding: 13px 16px; font-size: 16px; }
+  .bouton.sec { background: var(--carte); border: 1px solid var(--bord); }
+  #msg-reglages { min-height: 20px; font-size: 14px; }
+  small { color: var(--doux); line-height: 1.4; }
+</style>
+</head>
+<body>
 
-  const lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(25000);
-    let rep;
-    if (c.action === 'ping') {
-      rep = { text: 'Connexion OK.' };
-    } else if (c.action === 'annuler') {
-      rep = { text: annuler_(getSS_(), String(c.undoId || '')) };
-    } else {
-      const t = String(c.texte || '').trim();
-      if (!t) throw new UserError('Message vide.');
-      if (t.length > 500) throw new UserError('Message trop long.');
-      console.log('WEB : « ' + t + ' »');
-      rep = traiter_({ text: t });
-      console.log('WEB RÉPONSE : ' + rep.text.replace(/\n/g, ' | '));
-    }
-    return { ok: true, text: rep.text, parle: vocal_(rep.text), undoId: rep.undoId || null,
-             diag: { via: DIAG_.via || null, modele: DIAG_.modele || null, msIA: DIAG_.msIA || 0, ms: Date.now() - t0 } };
-  } catch (err) {
-    if (err instanceof UserError) return { ok: false, text: '⚠️ ' + err.message, parle: err.message };
-    console.error(err && err.stack ? err.stack : err);
-    return { ok: false, text: '⚠️ Erreur technique (détails dans les Exécutions d\'Apps Script).', parle: 'Erreur technique.' };
-  } finally {
-    try { lock.releaseLock(); } catch (_) { /* rien */ }
-  }
-}
+<header>
+  <h1>🎙️ Jarvis · Comptes</h1>
+  <div>
+    <span id="etat"></span>
+    <button class="icone" id="ouvrir-reglages" aria-label="Réglages">⚙️</button>
+  </div>
+</header>
 
-function traiterMessage_(msg) {
-  const chatId = String(msg.chat.id);
-  // 3) seul TON chat est autorisé
-  if (chatId !== String(prop_('CHAT_ID'))) {
-    console.log('IGNORÉ : message d\'un autre chat (' + chatId + ')');
-    return;
-  }
+<main>
+  <section id="zone-micro">
+    <button id="micro" aria-label="Parler">🎤</button>
+    <div id="live">Appuie sur le micro et parle.</div>
+  </section>
 
-  try {
-    console.log('MESSAGE : ' + (msg.text ? 'texte « ' + msg.text + ' »' : (msg.voice || msg.audio) ? 'vocal' : 'autre type'));
-    if (msg.text === '/start' || msg.text === '/aide') {
-      envoyer_(chatId, 'Exemples :\n• « sortie 12000 courses chez Score »\n• « entrée 500000 salaire le 25 septembre »\n' +
-        '• « combien il me reste en poche ? »\n• « combien j\'ai dépensé en courses ce mois-ci ? »');
-      return;
-    }
-    let entree;
-    const vocal = msg.voice || msg.audio;
-    if (vocal) {
-      if (vocal.duration && vocal.duration > 60) throw new UserError('Vocal trop long (60 s max).');
-      entree = { audio: telechargerFichier_(vocal.file_id), mime: vocal.mime_type || 'audio/ogg' };
-    } else if (msg.text) {
-      entree = { text: msg.text };
-    } else {
-      return;
-    }
-    tg_('sendChatAction', { chat_id: chatId, action: 'typing' });
-    const rep = traiter_(entree);
-    console.log('RÉPONSE : ' + rep.text.replace(/\n/g, ' | '));
-    envoyer_(chatId, rep.text, rep.undoId ? [[{ text: '↩️ Annuler', callback_data: 'u:' + rep.undoId }]] : null);
-  } catch (err) {
-    if (err instanceof UserError) {
-      envoyer_(chatId, '⚠️ ' + err.message);
-    } else {
-      console.error(err && err.stack ? err.stack : err);
-      envoyer_(chatId, '⚠️ Erreur technique (détails dans les Exécutions d\'Apps Script).');
-    }
-  }
-}
+  <section id="reponse" class="carte" aria-live="polite"></section>
+  <div id="chrono"></div>
+  <button id="annuler">↩️ Annuler cette ligne</button>
 
-function traiterBouton_(cb) {
-  const chatId = String(cb.message.chat.id);
-  if (chatId !== String(prop_('CHAT_ID'))) return;
-  tg_('answerCallbackQuery', { callback_query_id: cb.id });
-  tg_('editMessageReplyMarkup', {
-    chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } });
-  try {
-    if (cb.data && cb.data.indexOf('u:') === 0) {
-      envoyer_(chatId, annuler_(getSS_(), cb.data.slice(2)));
-    }
-  } catch (err) {
-    envoyer_(chatId, err instanceof UserError ? '⚠️ ' + err.message : '⚠️ Erreur technique.');
-    if (!(err instanceof UserError)) console.error(err);
-  }
-}
+  <section id="pastilles">
+    <button class="pastille" data-q="Combien il me reste en poche ?">👛 Solde poche</button>
+    <button class="pastille" data-q="Quel est mon solde salaire ?">💼 Solde salaire</button>
+    <button class="pastille" data-q="Combien j'ai dépensé en courses ce mois-ci ?">🧾 Courses du mois</button>
+  </section>
 
-/* ======================= Cerveau : Gemini ======================= */
+  <section id="saisie">
+    <input id="texte" type="text" placeholder="…ou écris ici (ex. sortie 5000 courses)" autocomplete="off" enterkeyhint="send">
+    <button id="envoyer" aria-label="Envoyer">➤</button>
+  </section>
 
-const OUTILS = [{
-  functionDeclarations: [
-    {
-      name: 'ajouter_ligne',
-      description: 'Ajoute une ligne (entrée, sortie, versement ou virement) dans la feuille espèces ou banque.',
-      parameters: {
-        type: 'OBJECT',
-        properties: {
-          feuille: { type: 'STRING', enum: ['ESPECES', 'BANQUE'] },
-          mouvement: { type: 'STRING', enum: ['ENTREE', 'SORTIE', 'VERSEMENT', 'VIREMENT'] },
-          montant: { type: 'NUMBER', description: 'Montant en ariary, nombre positif.' },
-          libelle: { type: 'STRING', description: 'Catégorie, exactement une valeur de la liste fournie.' },
-          motif: { type: 'STRING', description: 'Détail libre et court.' },
-          date: { type: 'STRING', description: 'AAAA-MM-JJ, uniquement si l\'utilisateur donne une date.' },
-          type: { type: 'STRING', enum: ['POCHE', 'ZEH', 'SALAIRE', 'COURANT', 'EPARGNE', 'MITSIRY', '8%'] },
-          compte: { type: 'STRING', enum: ['BOA', 'BNI', 'ESPECES', 'MVOLA'], description: 'Banque uniquement.' },
-        },
-        required: ['feuille', 'mouvement', 'montant', 'libelle'],
-      },
-    },
-    {
-      name: 'solde',
-      description: 'Donne un solde actuel.',
-      parameters: {
-        type: 'OBJECT',
-        properties: { compte: { type: 'STRING', enum: ['POCHE', 'ZEH', 'SALAIRE', 'ESPECES', 'BANQUE'] } },
-        required: ['compte'],
-      },
-    },
-    {
-      name: 'depenses_categorie',
-      description: 'Somme des mouvements d\'une catégorie sur une période, espèces + banque cumulés.',
-      parameters: {
-        type: 'OBJECT',
-        properties: {
-          libelle: { type: 'STRING', description: 'Catégorie, exactement une valeur de la liste fournie.' },
-          mois: { type: 'INTEGER', description: '1 à 12. 0 = toute l\'année. Si absent : mois en cours.' },
-          annee: { type: 'INTEGER', description: 'Si absent : année en cours.' },
-          mouvement: { type: 'STRING', enum: ['SORTIE', 'ENTREE'], description: 'SORTIE par défaut.' },
-        },
-        required: ['libelle'],
-      },
-    },
-    {
-      name: 'demander_precision',
-      description: 'À utiliser si une information indispensable manque, si tu hésites, ou si le message est hors sujet.',
-      parameters: {
-        type: 'OBJECT',
-        properties: { question: { type: 'STRING', description: 'Question courte en français.' } },
-        required: ['question'],
-      },
-    },
-  ],
-}];
+  <section class="options">
+    <label><input type="checkbox" id="voix" checked> Réponse vocale</label>
+    <label><input type="checkbox" id="relire"> Relire avant d'envoyer</label>
+  </section>
 
-function promptSysteme_(categories) {
-  return [
-    'Tu es l\'assistant comptable de l\'utilisateur (Madagascar, monnaie : ariary, Ar).',
-    'Tu transformes chaque message (texte ou vocal en français) en UN appel d\'outil.',
-    'Date du jour : ' + Utilities.formatDate(new Date(), CFG.TZ_USER, 'yyyy-MM-dd (EEEE)') + '.',
-    'Catégories valides pour "libelle" : ' + categories.map(function (c) { return c.trim(); }).join(', ') + '.',
-    'Règles :',
-    '- Feuille ESPECES par défaut (poche, cash, espèces, ZEH). BANQUE si banque, BOA, BNI, MVola, virement, carte.',
-    '- Montant : nombre en ariary sans séparateur ("12 000", "douze mille", "12k" = 12000).',
-    '- libelle = EXACTEMENT une catégorie de la liste (la plus proche). Le détail libre va dans motif (court).',
-    '- ESPECES : type POCHE par défaut, sauf si ZEH ou SALAIRE est mentionné.',
-    '- BANQUE : compte obligatoire (BOA, BNI, MVOLA ou ESPECES) ; type COURANT par défaut.',
-    '- N\'invente jamais de date : renseigne "date" seulement si l\'utilisateur en cite une ' +
-      '(convertis "le 25 septembre", "hier", "avant-hier" en AAAA-MM-JJ à partir de la date du jour).',
-    '- Question de solde -> solde. "Combien dépensé en X" -> depenses_categorie ("ce mois-ci" = mois en cours).',
-    '- Si une information indispensable manque, ou en cas de doute -> demander_precision avec une question courte.',
-  ].join('\n');
-}
+  <section id="historique"></section>
+</main>
 
-let DIAG_ = {};   // infos de diagnostic renvoyées à la page (modèle utilisé, durée IA)
+<div id="reglages">
+  <div class="contenu">
+    <h1>Réglages</h1>
+    <small>Ces deux informations restent uniquement dans ce navigateur, sur cet appareil. Elles ne sont jamais écrites dans la page.</small>
+    <label class="champ">Adresse du script (se termine par /exec, sans « ?s= »)
+      <input id="champ-url" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    </label>
+    <label class="champ">Mot de passe
+      <input id="champ-pass" type="password" autocomplete="off">
+    </label>
+    <div id="msg-reglages"></div>
+    <button class="bouton" id="sauver">Enregistrer et tester</button>
+    <button class="bouton sec" id="fermer">Fermer</button>
+    <button class="bouton sec" id="oublier">Effacer ces réglages de cet appareil</button>
+  </div>
+</div>
 
-function appelGemini_(entree, categories) {
-  const principal = prop_('GEMINI_MODEL') || CFG.DEFAULT_MODEL;
-  const secours = prop_('GEMINI_MODEL_SECOURS') || CFG.FALLBACK_MODEL;
-  const cache = CacheService.getScriptCache();
-  const parts = entree.audio
-    ? [{ inlineData: { mimeType: entree.mime, data: entree.audio } }, { text: 'Message vocal de l\'utilisateur.' }]
-    : [{ text: entree.text }];
-  const base = {
-    systemInstruction: { parts: [{ text: promptSysteme_(categories) }] },
-    contents: [{ role: 'user', parts: parts }],
-    tools: OUTILS,
-    toolConfig: { functionCallingConfig: { mode: 'ANY' } },
+<script>
+(function () {
+  'use strict';
+  var $ = function (s) { return document.querySelector(s); };
+
+  /* ---------- stockage local (protégé par try/catch) ---------- */
+  var stock = {
+    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+    del: function (k) { try { localStorage.removeItem(k); } catch (e) {} }
   };
 
-  function appeler(modele, avecPensee) {
-    const gen = { temperature: 0 };
-    // « Réflexion minimale » : beaucoup plus rapide pour une simple extraction de champs
-    if (avecPensee) gen.thinkingConfig = { thinkingLevel: 'minimal' };
-    return UrlFetchApp.fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + modele + ':generateContent', {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { 'x-goog-api-key': prop_('GEMINI_KEY') },
-        payload: JSON.stringify(Object.assign({}, base, { generationConfig: gen })),
-        muteHttpExceptions: true,
+  var rec = null, ecoute = false, occupe = false, dernierAnnul = null;
+
+  /* ---------- interface ---------- */
+  function etat(mode) {
+    var m = $('#micro');
+    m.className = '';
+    if (mode) m.classList.add(mode);
+    var txt = { ecoute: 'J\'écoute…', reflechit: 'Je réfléchis…', parle: 'Je réponds…' }[mode] || '';
+    $('#etat').textContent = txt;
+    m.textContent = mode === 'ecoute' ? '⏹' : mode === 'reflechit' ? '⏳' : mode === 'parle' ? '🔊' : '🎤';
+  }
+
+  function afficher(r) {
+    var c = $('#reponse');
+    c.style.display = 'block';
+    c.textContent = r.text || '';
+    c.className = 'carte' + (r.ok ? '' : ' erreur');
+    var ch = '', d = r.diag;
+    if (d) {
+      var sec = function (ms) { return (ms / 1000).toFixed(1).replace('.', ',') + ' s'; };
+      ch = (d.via === 'rapide' ? '⚡ sans IA' : '🧠 IA' + (d.modele ? ' (' + d.modele + ', ' + sec(d.msIA) + ')' : '')) +
+           ' · script ' + sec(d.ms) + (r.total ? ' · total ' + sec(r.total) : '');
+    }
+    $('#chrono').textContent = ch;
+    dernierAnnul = r.undoId || null;
+    $('#annuler').style.display = dernierAnnul ? 'inline-block' : 'none';
+  }
+
+  function historique(q, r) {
+    var h = $('#historique');
+    var d = document.createElement('div');
+    d.className = 'ligne';
+    var b = document.createElement('b');
+    b.textContent = '› ' + q;
+    var s = document.createElement('div');
+    s.textContent = (r.text || '').split('\n').slice(0, 2).join(' — ');
+    d.appendChild(b); d.appendChild(s);
+    h.insertBefore(d, h.firstChild);
+    while (h.children.length > 6) h.removeChild(h.lastChild);
+  }
+
+  /* ---------- appel du script ---------- */
+  function api(payload) {
+    var url = stock.get('url'), pass = stock.get('pass');
+    if (!url || !pass) { ouvrirReglages(); return Promise.reject(new Error('Renseigne d\'abord les réglages.')); }
+    var statut = 0, t0 = performance.now();
+    var ctrl = new AbortController();
+    var t = setTimeout(function () { ctrl.abort(); }, 45000);
+    var corps = Object.assign({ canal: 'web', pass: pass }, payload);
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },  // évite la pré-requête CORS
+      body: JSON.stringify(corps),
+      redirect: 'follow',
+      signal: ctrl.signal
+    }).then(function (res) { statut = res.status; return res.text(); })
+      .then(function (txt) {
+        clearTimeout(t);
+        var j;
+        try { j = JSON.parse(txt); }
+        catch (e) {
+          var extrait = txt.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+          throw new Error('Google a répondu autre chose que prévu (code ' + statut + ') : « ' + extrait + ' »');
+        }
+        j.total = performance.now() - t0;
+        return j;
+      })
+      .catch(function (e) {
+        clearTimeout(t);
+        if (e.name === 'AbortError') throw new Error('Pas de réponse après 45 s. Réessaie ; si ça se répète, envoie-moi ce message.');
+        if (e instanceof TypeError) throw new Error('Impossible de joindre le script (' + e.message + '). Vérifie ton réseau et l\'adresse.');
+        throw e;
       });
   }
 
-  // 1 essai sur le modèle principal, puis 1 sur le modèle de secours (erreurs temporaires 429 / 500 / 503, ou modèle introuvable 404)
-  const modeles = [principal, secours];
-  for (let i = 0; i < modeles.length; i++) {
-    const t0 = Date.now();
-    let avecPensee = !cache.get('sanspensee_' + modeles[i]);
-    let res = appeler(modeles[i], avecPensee);
-    if (res.getResponseCode() === 400 && avecPensee) {   // paramètre de réflexion non reconnu par ce modèle
-      cache.put('sanspensee_' + modeles[i], '1', 21600);
-      res = appeler(modeles[i], false);
+  /* ---------- voix de sortie ---------- */
+  function choisirVoix() {
+    var vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    var fr = vs.filter(function (v) { return /^fr/i.test(v.lang); });
+    return fr.filter(function (v) { return /fr[-_]FR/i.test(v.lang); })[0] || fr[0] || null;
+  }
+  if (window.speechSynthesis) speechSynthesis.onvoiceschanged = function () {};
+
+  function parler(texte) {
+    if (!window.speechSynthesis || !texte) return;
+    speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(texte);
+    u.lang = 'fr-FR';
+    var v = choisirVoix(); if (v) u.voice = v;
+    u.onstart = function () { etat('parle'); };
+    u.onend = u.onerror = function () { if (!occupe && !ecoute) etat(''); };
+    speechSynthesis.speak(u);
+  }
+
+  /* ---------- envoi d'un message ---------- */
+  function envoyer(texte) {
+    texte = (texte || '').trim();
+    if (!texte || occupe) return;
+    occupe = true; etat('reflechit');
+    $('#live').textContent = '« ' + texte + ' »';
+    api({ action: 'message', texte: texte })
+      .then(function (r) {
+        afficher(r); historique(texte, r);
+        occupe = false; etat('');
+        if ($('#voix').checked && r.parle) parler(r.parle);
+        if (r.auth === false) ouvrirReglages('Mot de passe refusé : corrige-le ci-dessous.');
+      })
+      .catch(function (e) {
+        occupe = false; etat('');
+        afficher({ ok: false, text: '⚠️ ' + e.message });
+      });
+  }
+
+  /* ---------- reconnaissance vocale ---------- */
+  function demarrerEcoute() {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      afficher({ ok: false, text: '⚠️ Ce navigateur ne gère pas la reconnaissance vocale. Utilise Chrome, ou écris ton message.' });
+      return;
     }
-    const code = res.getResponseCode();
-    DIAG_.modele = modeles[i];
-    DIAG_.msIA = Date.now() - t0;
-    if (code === 200) {
-      const json = JSON.parse(res.getContentText());
-      const cand = json.candidates && json.candidates[0];
-      const ps = (cand && cand.content && cand.content.parts) || [];
-      const fc = ps.filter(function (p) { return p.functionCall; })[0];
-      return fc ? fc.functionCall : null;
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    rec = new SR();
+    rec.lang = 'fr-FR';
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
+    var final = '', erreur = null;
+
+    rec.onresult = function (e) {
+      var interim = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) final += t; else interim += t;
+      }
+      $('#live').textContent = (final + interim) || '…';
+    };
+    rec.onerror = function (e) {
+      erreur = e.error;
+      var m = {
+        'not-allowed': 'Micro refusé : autorise le micro pour ce site (icône à gauche de l\'adresse).',
+        'service-not-allowed': 'Micro refusé : autorise le micro pour ce site.',
+        'no-speech': 'Je n\'ai rien entendu. Réessaie.',
+        'audio-capture': 'Aucun micro détecté.',
+        'network': 'La reconnaissance vocale a besoin d\'Internet.'
+      }[e.error];
+      if (m) afficher({ ok: false, text: '⚠️ ' + m });
+    };
+    rec.onend = function () {
+      ecoute = false; etat('');
+      var t = final.trim();
+      if (!t) { if (!erreur) $('#live').textContent = 'Rien entendu. Réessaie.'; return; }
+      if ($('#relire').checked) { $('#texte').value = t; $('#live').textContent = 'Vérifie le texte puis envoie ➤'; }
+      else envoyer(t);
+    };
+    try { rec.start(); ecoute = true; etat('ecoute'); $('#live').textContent = '…'; }
+    catch (e) { ecoute = false; etat(''); }
+  }
+
+  /* ---------- réglages ---------- */
+  function ouvrirReglages(msg) {
+    $('#champ-url').value = stock.get('url') || '';
+    $('#champ-pass').value = stock.get('pass') || '';
+    $('#msg-reglages').textContent = msg || '';
+    $('#reglages').classList.add('ouvert');
+  }
+  function fermerReglages() { $('#reglages').classList.remove('ouvert'); }
+
+  $('#ouvrir-reglages').onclick = function () { ouvrirReglages(); };
+  $('#fermer').onclick = fermerReglages;
+  $('#oublier').onclick = function () {
+    stock.del('url'); stock.del('pass');
+    $('#champ-url').value = ''; $('#champ-pass').value = '';
+    $('#msg-reglages').textContent = 'Réglages effacés de cet appareil.';
+  };
+  $('#sauver').onclick = function () {
+    var url = $('#champ-url').value.trim(), pass = $('#champ-pass').value;
+    var msg = $('#msg-reglages');
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[^?\s]+\/exec$/.test(url)) {
+      msg.textContent = '⚠️ L\'adresse doit ressembler à https://script.google.com/macros/s/…/exec (sans « ?s= »).'; return;
     }
-    if (code === 429 || code === 500 || code === 503 || code === 404) {
-      console.warn('Gemini ' + code + ' avec ' + modeles[i] + ' (' + DIAG_.msIA + ' ms) : ' + res.getContentText().slice(0, 200));
-      continue;
-    }
-    throw new Error('Gemini ' + code + ' : ' + res.getContentText().slice(0, 500));
-  }
-  throw new UserError('Gemini est surchargé ou saturé en ce moment. Réessaie dans une minute.');
-}
+    if (!pass) { msg.textContent = '⚠️ Saisis le mot de passe.'; return; }
+    stock.set('url', url); stock.set('pass', pass);
+    msg.textContent = 'Test en cours…';
+    api({ action: 'ping' })
+      .then(function (r) {
+        if (r.ok) { msg.textContent = '✅ Connexion OK.'; setTimeout(fermerReglages, 700); }
+        else msg.textContent = '⚠️ ' + (r.text || 'Échec.');
+      })
+      .catch(function (e) { msg.textContent = '⚠️ ' + e.message; });
+  };
 
-/* ---------- Voie rapide : phrases courantes comprises SANS IA (quasi instantané) ---------- */
-
-function esc_(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-
-function categoriesTrouvees_(txt, categories) {
-  const out = [];
-  categories.forEach(function (c) {
-    const k = norm_(c).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-    if (!k) return;
-    const sans = k.replace(/s$/, '');
-    const re = new RegExp('\\b(' + [esc_(k), esc_(sans), esc_(sans) + 's'].join('|') + ')\\b');
-    if (re.test(txt)) out.push(c);
+  /* ---------- événements ---------- */
+  $('#micro').onclick = function () {
+    if (occupe) return;
+    if (ecoute && rec) { rec.stop(); return; }
+    demarrerEcoute();
+  };
+  $('#envoyer').onclick = function () { var t = $('#texte').value; $('#texte').value = ''; envoyer(t); };
+  $('#texte').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); $('#envoyer').click(); }
   });
-  return out;
-}
-
-const MOTS_BRUIT_ = ['j', 'ai', 'jai', 'de', 'du', 'des', 'd', 'la', 'le', 'les', 'l', 'en', 'pour', 'avec', 'sur', 'a', 'au', 'aux',
-  'un', 'une', 'ar', 'ariary', 'k', 'mille', 'ce', 'cette', 'mon', 'ma', 'mes', 'dans', 'et', 'hier', 'avant', 'aujourd', 'hui',
-  'chez', 'poche', 'zeh', 'salaire', 'especes', 'cash', 'banque', 'boa', 'bni', 'mvola', 'carte', 'il', 'y', 'c', 'est', 'me', 'te'];
-
-function rapide_(texte, categories) {
-  const brut = String(texte || '').trim();
-  const n = norm_(brut).toLowerCase().replace(/[’']/g, ' ');
-  if (!n) return null;
-
-  // Montant (ex. 12000, 12 000, 12k, 12 mille) ; tout autre chiffre dans la phrase (date, etc.) -> on laisse l'IA décider
-  const m = n.match(/(\d{1,3}(?:[ .]\d{3})+|\d+)\s*(k|mille)?\s*(?:ariary|ar)?(?![a-z0-9])/);
-  const reste = m ? (n.slice(0, m.index) + ' ' + n.slice(m.index + m[0].length)) : n;
-  if (/\d/.test(reste)) return null;
-  const montant = m ? Number(m[1].replace(/[ .]/g, '')) * (m[2] ? 1000 : 1) : null;
-
-  const cats = categoriesTrouvees_(reste, categories);
-  const MOIS_RE = /\b(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\b/;
-
-  /* ----- Questions (pas de montant) ----- */
-  if (!m) {
-    const cibles = [];
-    if (/\bzeh\b/.test(n)) cibles.push('ZEH');
-    if (/\bpoche\b/.test(n)) cibles.push('POCHE');
-    if (/\bsalaire\b/.test(n)) cibles.push('SALAIRE');
-    if (/\b(banque|boa|bni|mvola)\b/.test(n)) cibles.push('BANQUE');
-    if (/\b(especes|cash|liquide)\b/.test(n)) cibles.push('ESPECES');
-    if (/\b(solde|reste|restant|disponible)\b/.test(n)) {
-      return cibles.length === 1 ? { name: 'solde', args: { compte: cibles[0] } } : null;
-    }
-    if (/\b(depens\w*|combien|total)\b/.test(n) && cats.length === 1) {
-      if (MOIS_RE.test(n) || /\b(dernier\w*|passe\w*|precedent\w*|semaine|hier|aujourd)\b/.test(n)) return null;
-      const a = { libelle: cats[0], mouvement: /\b(recu\w*|gagn\w*|entree\w*|touche\w*)\b/.test(n) ? 'ENTREE' : 'SORTIE' };
-      if (/\bannee\b/.test(n)) a.mois = 0;
-      return { name: 'depenses_categorie', args: a };
-    }
-    return null;
-  }
-
-  /* ----- Ajout d'une ligne (montant présent) ----- */
-  if (/\bcombien\b/.test(n) || brut.indexOf('?') >= 0) return null;
-  if (/\b(verse\w*|vire\w*|transf\w*|retrait\w*)\b/.test(n)) return null;
-  if (MOIS_RE.test(n) || /\b(demain|dernier\w*|prochain\w*|semaine|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/.test(n)) return null;
-
-  const sortie = /\b(depens\w*|sortie\w*|sorti|paye\w*|achet\w*|retir\w*|decaiss\w*)\b/.test(n);
-  const entree = /\b(recu\w*|gagn\w*|entree\w*|encaiss\w*|touche\w*|rentre\w*)\b/.test(n);
-  if (sortie === entree) return null;                       // ni l'un ni l'autre, ou les deux : doute -> IA
-
-  let c = cats.slice();
-  // « courses sur le salaire », « courses en poche », « courses mvola » : ces mots sont aussi des catégories -> on garde l'autre
-  if (c.length > 1) c = c.filter(function (x) { return ['SALAIRE', 'POCHE', 'MVOLA'].indexOf(norm_(x)) < 0; });
-  if (c.length !== 1) return null;
-
-  const aZeh = /\bzeh\b/.test(n), aSalaire = /\bsalaire\b/.test(n);
-  if (aZeh && aSalaire) return null;
-
-  const comptes = [];
-  if (/\bboa\b/.test(n)) comptes.push('BOA');
-  if (/\bbni\b/.test(n)) comptes.push('BNI');
-  if (/\bmvola\b/.test(n)) comptes.push('MVOLA');
-  const banque = /\b(banque|boa|bni|mvola|carte|virement)\b/.test(n);
-
-  const a = { mouvement: sortie ? 'SORTIE' : 'ENTREE', montant: montant, libelle: c[0] };
-  if (banque) {
-    if (comptes.length !== 1 || aZeh || aSalaire) return null;
-    a.feuille = 'BANQUE'; a.compte = comptes[0];
-  } else {
-    a.feuille = 'ESPECES';
-    a.type = aZeh ? 'ZEH' : aSalaire ? 'SALAIRE' : 'POCHE';
-  }
-  if (/\bavant hier\b/.test(n)) a.date = dateRelative_(2);
-  else if (/\bhier\b/.test(n)) a.date = dateRelative_(1);
-
-  // Motif : les mots restants (sans montant, catégorie, mots-outils)
-  const catMots = {};
-  c.forEach(function (x) {
-    const k = norm_(x).toLowerCase();
-    catMots[k] = 1; catMots[k.replace(/s$/, '')] = 1; catMots[k.replace(/s$/, '') + 's'] = 1;
+  Array.prototype.forEach.call(document.querySelectorAll('.pastille'), function (p) {
+    p.onclick = function () { envoyer(p.getAttribute('data-q')); };
   });
-  const motif = (brut.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []).filter(function (w) {
-    const k = norm_(w).toLowerCase();
-    return !/^\d+k?$/.test(k) && MOTS_BRUIT_.indexOf(k) < 0 && !catMots[k] &&
-      !/^(depens|sort|paye|achet|retir|decaiss|recu|gagn|entre|encaiss|touch|rentr|virement)/.test(k);
-  }).join(' ').slice(0, 60);
-  if (motif) a.motif = motif.charAt(0).toUpperCase() + motif.slice(1);
-  return { name: 'ajouter_ligne', args: a };
-}
+  $('#annuler').onclick = function () {
+    if (!dernierAnnul || occupe) return;
+    var id = dernierAnnul;
+    occupe = true; etat('reflechit');
+    api({ action: 'annuler', undoId: id })
+      .then(function (r) {
+        occupe = false; etat('');
+        afficher(r);
+        if ($('#voix').checked && r.parle) parler(r.parle);
+      })
+      .catch(function (e) { occupe = false; etat(''); afficher({ ok: false, text: '⚠️ ' + e.message }); });
+  };
 
-function dateRelative_(jours) {
-  const d = new Date();
-  d.setDate(d.getDate() - jours);
-  return Utilities.formatDate(d, CFG.TZ_USER, 'yyyy-MM-dd');
-}
-
-function traiter_(entree) {
-  const ss = getSS_();
-  const categories = lireCategories_(ss);
-  let appel = entree.text ? rapide_(entree.text, categories) : null;
-  DIAG_.via = appel ? 'rapide' : 'ia';
-  if (!appel) appel = appelGemini_(entree, categories);
-  if (!appel) return { text: 'Je n\'ai pas compris. Peux-tu reformuler ?' };
-  return executerOutil_(ss, appel.name, appel.args || {}, categories);
-}
-
-/* ======================= Outils ======================= */
-
-function executerOutil_(ss, nom, a, categories) {
-  switch (nom) {
-    case 'ajouter_ligne': return ajouterLigne_(ss, a, categories);
-    case 'solde': return { text: solde_(ss, a.compte) };
-    case 'depenses_categorie': return { text: depensesCategorie_(ss, a, categories) };
-    case 'demander_precision': return { text: '🤔 ' + (a.question || 'Peux-tu préciser ?') };
-    default: throw new UserError('Outil inconnu : ' + nom);
-  }
-}
-
-function lireCategories_(ss) {
-  const sh = ss.getSheetByName(CFG.SHEET_PARAMS);
-  if (!sh) throw new UserError('Feuille introuvable : ' + CFG.SHEET_PARAMS);
-  const n = sh.getLastRow() - 1;
-  if (n < 1) return [];
-  return sh.getRange(2, CFG.PARAMS_COL_CATEGORIES, n, 1).getValues()
-    .map(function (r) { return r[0]; })
-    .filter(function (v) { return String(v).trim() !== ''; })
-    .map(String);
-}
-
-// En-têtes de la ligne 1 -> numéro de colonne (clé = premier mot sans accent, ex. "montant", "libelle")
-function enTetes_(sh) {
-  const map = {};
-  sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].forEach(function (h, i) {
-    const k = norm_(h).split(/[ (]/)[0].toLowerCase();
-    if (k && !(k in map)) map[k] = i + 1;
-  });
-  return map;
-}
-
-function nomFeuille_(code) {
-  return code === 'BANQUE' ? CFG.SHEET_BANQUE : CFG.SHEET_ESPECES;
-}
-
-// Lit toutes les lignes saisies (date renseignée) d'une feuille BDD
-function lireLignes_(ss, nomFeuille) {
-  const sh = ss.getSheetByName(nomFeuille);
-  if (!sh) throw new UserError('Feuille introuvable : ' + nomFeuille);
-  const map = enTetes_(sh);
-  const vals = sh.getDataRange().getValues();
-  const out = [];
-  for (let i = 1; i < vals.length; i++) {
-    const d = vals[i][map.date - 1];
-    if (!(d instanceof Date)) continue;
-    out.push({
-      row: i + 1,
-      date: d,
-      mouvement: norm_(vals[i][map.mouvement - 1]),
-      type: map.type ? norm_(vals[i][map.type - 1]) : '',
-      compte: map.compte ? norm_(vals[i][map.compte - 1]) : '',
-      montant: Number(vals[i][map.montant - 1]) || 0,
-      libelle: norm_(vals[i][map.libelle - 1]),
-      total: map.total ? vals[i][map.total - 1] : null,
-    });
-  }
-  return out;
-}
-
-function trouverCategorie_(categories, saisie) {
-  const n = norm_(saisie);
-  const trouvee = categories.filter(function (c) { return norm_(c) === n; })[0];
-  if (!trouvee) {
-    throw new UserError('Catégorie « ' + saisie + ' » inconnue. Catégories : ' +
-      categories.map(function (c) { return c.trim(); }).join(', ') + '.');
-  }
-  return trouvee; // valeur exacte de PARAMETRES (espaces éventuels compris)
-}
-
-/* ---------- ajouter_ligne ---------- */
-
-function ajouterLigne_(ss, a, categories) {
-  const feuille = a.feuille === 'BANQUE' ? 'BANQUE' : 'ESPECES';
-  const mouv = norm_(a.mouvement);
-  const montant = Number(a.montant);
-  if (!isFinite(montant) || montant <= 0) throw new UserError('Montant invalide.');
-  const libelle = trouverCategorie_(categories, a.libelle);
-  const motif = String(a.motif || '').trim();
-
-  let type, compte = null;
-  if (feuille === 'ESPECES') {
-    if (['ENTREE', 'SORTIE', 'VERSEMENT'].indexOf(mouv) < 0)
-      throw new UserError('Pour les espèces, le mouvement doit être ENTREE, SORTIE ou VERSEMENT.');
-    type = norm_(a.type) || 'POCHE';
-    if (['POCHE', 'ZEH', 'SALAIRE'].indexOf(type) < 0)
-      throw new UserError('Pour les espèces, le type doit être POCHE, ZEH ou SALAIRE.');
-  } else {
-    if (['ENTREE', 'SORTIE', 'VERSEMENT', 'VIREMENT'].indexOf(mouv) < 0)
-      throw new UserError('Mouvement invalide pour la banque.');
-    compte = norm_(a.compte);
-    if (['BOA', 'BNI', 'ESPECES', 'MVOLA'].indexOf(compte) < 0)
-      throw new UserError('Quel compte ? BOA, BNI, MVOLA ou ESPECES ?');
-    type = norm_(a.type) || 'COURANT';
-    if (['COURANT', 'EPARGNE', 'MITSIRY', '8%'].indexOf(type) < 0)
-      throw new UserError('Pour la banque, le type doit être COURANT, EPARGNE, MITSIRY ou 8%.');
-  }
-
-  // Date : celle donnée, sinon aujourd'hui. Construite dans le fuseau du classeur pour éviter tout décalage de jour.
-  const dateStr = a.date ? String(a.date).trim() : aujourdhui_();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) throw new UserError('Date invalide : ' + dateStr);
-  const tzSS = ss.getSpreadsheetTimeZone();
-  const dateObj = Utilities.parseDate(dateStr, tzSS, 'yyyy-MM-dd');
-  if (Utilities.formatDate(dateObj, tzSS, 'yyyy-MM-dd') !== dateStr) throw new UserError('Date inexistante : ' + dateStr);
-
-  const nomF = nomFeuille_(feuille);
-  const sh = ss.getSheetByName(nomF);
-  if (!sh) throw new UserError('Feuille introuvable : ' + nomF);
-  const map = enTetes_(sh);
-
-  // Colonnes MANUELLES uniquement. Mois, Année, Solde, TOTAL (formules) ne sont jamais touchées.
-  const champs = feuille === 'ESPECES'
-    ? { date: dateObj, mouvement: mouv, type: type, montant: montant, libelle: libelle, motif: motif }
-    : { date: dateObj, mouvement: mouv, compte: compte, type: type, montant: montant, libelle: libelle, motif: motif };
-  Object.keys(champs).forEach(function (k) {
-    if (!map[k]) throw new UserError('Colonne « ' + k + ' » introuvable dans ' + nomF + '.');
-  });
-
-  // Première ligne libre APRÈS la dernière ligne saisie
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) throw new UserError('La feuille ' + nomF + ' est vide.');
-  const colDate = sh.getRange(2, map.date, lastRow - 1, 1).getValues();
-  let derniere = 1;
-  for (let i = 0; i < colDate.length; i++) if (colDate[i][0] !== '' && colDate[i][0] != null) derniere = i + 2;
-  const ligne = derniere + 1;
-  if (ligne > lastRow) throw new UserError('Plus de ligne pré-remplie disponible dans ' + nomF + ' (étends tes formules vers le bas).');
-
-  // Sécurité : toutes les cellules manuelles de la ligne cible doivent être vides
-  Object.keys(champs).forEach(function (k) {
-    const v = sh.getRange(ligne, map[k]).getValue();
-    if (v !== '' && v != null) throw new UserError('La ligne ' + ligne + ' n\'est pas vide, j\'annule pour ne rien écraser.');
-  });
-  Object.keys(champs).forEach(function (k) { sh.getRange(ligne, map[k]).setValue(champs[k]); });
-
-  const undoId = Utilities.getUuid().slice(0, 8);
-  CacheService.getScriptCache().put('undo_' + undoId,
-    JSON.stringify({ feuille: nomF, ligne: ligne, montant: montant, cols: Object.keys(champs).map(function (k) { return map[k]; }) }),
-    21600);
-
-  const lignes = [
-    '✅ ' + (feuille === 'BANQUE' ? 'Banque' : 'Espèces') + ' · ligne ' + ligne,
-    mouv + ' · ' + (compte ? compte + ' · ' : '') + type + ' · ' + fmt_(montant),
-    libelle.trim() + (motif ? ' — ' + motif : ''),
-    '📅 ' + Utilities.formatDate(dateObj, tzSS, 'dd/MM/yyyy') + (a.date ? '' : ' (aujourd\'hui)'),
-  ];
-  return { text: lignes.join('\n'), undoId: undoId };
-}
-
-function annuler_(ss, undoId) {
-  const brut = CacheService.getScriptCache().get('undo_' + undoId);
-  if (!brut) throw new UserError('Annulation impossible (trop ancienne ou déjà faite). Corrige directement dans le Sheets.');
-  const u = JSON.parse(brut);
-  const sh = ss.getSheetByName(u.feuille);
-  const map = enTetes_(sh);
-  // On n'annule que la TOUTE DERNIÈRE ligne saisie, sinon la chaîne des soldes serait cassée
-  const suivante = sh.getLastRow() >= u.ligne + 1 ? sh.getRange(u.ligne + 1, map.date).getValue() : '';
-  if (suivante !== '' && suivante != null) throw new UserError('Une ligne plus récente existe déjà : corrige à la main dans le Sheets.');
-  const montantActuel = Number(sh.getRange(u.ligne, map.montant).getValue());
-  if (montantActuel !== u.montant) throw new UserError('La ligne a été modifiée entre-temps : corrige à la main.');
-  u.cols.forEach(function (c) { sh.getRange(u.ligne, c).clearContent(); });
-  CacheService.getScriptCache().remove('undo_' + undoId);
-  return '↩️ Ligne ' + u.ligne + ' annulée (' + u.feuille + ').';
-}
-
-/* ---------- solde ---------- */
-
-function solde_(ss, compte) {
-  const cible = norm_(compte);
-  if (cible === 'BANQUE') {
-    const l = lireLignes_(ss, CFG.SHEET_BANQUE);
-    if (!l.length) return 'Aucune ligne dans la feuille banque.';
-    const der = l[l.length - 1];
-    return '🏦 Banque (tous comptes, total de ta feuille) : ' + fmt_(Number(der.total) || 0) +
-      '\n(dernière ligne : ' + Utilities.formatDate(der.date, ss.getSpreadsheetTimeZone(), 'dd/MM/yyyy') + ')';
-  }
-  const lignes = lireLignes_(ss, CFG.SHEET_ESPECES);
-  let e = 0, s = 0, v = 0, dernier = null;
-  lignes.forEach(function (r) {
-    if (cible !== 'ESPECES' && r.type !== cible) return;
-    if (r.mouvement === 'ENTREE') e += r.montant;
-    else if (r.mouvement === 'SORTIE') s += r.montant;
-    else if (r.mouvement === 'VERSEMENT') v += r.montant;
-    dernier = r.date;
-  });
-  // Mêmes règles que tes TCD : poche et ZEH = entrées - sorties ; salaire et total espèces = entrées - sorties - versements
-  const total = (cible === 'POCHE' || cible === 'ZEH') ? e - s : e - s - v;
-  const icone = { POCHE: '👛', ZEH: '👛', SALAIRE: '💼', ESPECES: '💵' }[cible] || '💰';
-  const nom = { POCHE: 'En poche', ZEH: 'ZEH', SALAIRE: 'Salaire', ESPECES: 'Total espèces' }[cible] || cible;
-  return icone + ' ' + nom + ' : ' + fmt_(total) +
-    (dernier ? '\n(dernière ligne : ' + Utilities.formatDate(dernier, ss.getSpreadsheetTimeZone(), 'dd/MM/yyyy') + ')' : '');
-}
-
-/* ---------- depenses_categorie ---------- */
-
-function depensesCategorie_(ss, a, categories) {
-  const cat = trouverCategorie_(categories, a.libelle);
-  const mouv = norm_(a.mouvement) === 'ENTREE' ? 'ENTREE' : 'SORTIE';
-  const tz = ss.getSpreadsheetTimeZone();
-  const auj = aujourdhui_().split('-');
-  const annee = a.annee ? Number(a.annee) : Number(auj[0]);
-  const mois = (a.mois === 0 || a.mois === '0') ? 0 : (a.mois ? Number(a.mois) : Number(auj[1]));
-  if (mois < 0 || mois > 12) throw new UserError('Mois invalide.');
-
-  function somme(nomF) {
-    let t = 0, n = 0;
-    lireLignes_(ss, nomF).forEach(function (r) {
-      if (r.mouvement !== mouv || r.libelle !== norm_(cat)) return;
-      if (Number(Utilities.formatDate(r.date, tz, 'yyyy')) !== annee) return;
-      if (mois && Number(Utilities.formatDate(r.date, tz, 'M')) !== mois) return;
-      t += r.montant; n++;
-    });
-    return { t: t, n: n };
-  }
-  const esp = somme(CFG.SHEET_ESPECES);
-  const ban = somme(CFG.SHEET_BANQUE);
-  const periode = mois ? MOIS_FR[mois - 1] + ' ' + annee : 'année ' + annee;
-  return [
-    '🧾 ' + cat.trim() + ' — ' + periode + ' (' + (mouv === 'SORTIE' ? 'sorties' : 'entrées') + ')',
-    'Espèces : ' + fmt_(esp.t) + ' (' + esp.n + ' ligne' + (esp.n > 1 ? 's' : '') + ')',
-    'Banque : ' + fmt_(ban.t) + ' (' + ban.n + ' ligne' + (ban.n > 1 ? 's' : '') + ')',
-    'Total : ' + fmt_(esp.t + ban.t),
-  ].join('\n');
-}
-
-/* ======================= Installation & tests (à lancer à la main) ======================= */
-
-// À lancer UNE fois, après avoir déployé l'application web et renseigné WEBAPP_URL
-function installerWebhook() {
-  const url = prop_('WEBAPP_URL') + '?s=' + encodeURIComponent(prop_('WEBHOOK_SECRET'));
-  const res = tg_('setWebhook', { url: url, allowed_updates: ['message', 'callback_query'], drop_pending_updates: true });
-  Logger.log(JSON.stringify(res));
-}
-
-// À utiliser À LA PLACE de installerWebhook quand on passe par le relais Cloudflare
-// Propriétés requises : RELAIS_URL (adresse du Worker) et TG_SECRET_TOKEN (lettres, chiffres, _ ou -)
-function installerWebhookRelais() {
-  const res = tg_('setWebhook', {
-    url: prop_('RELAIS_URL'),
-    secret_token: prop_('TG_SECRET_TOKEN'),
-    allowed_updates: ['message', 'callback_query'],
-    drop_pending_updates: true,
-  });
-  Logger.log(JSON.stringify(res));
-}
-
-function infoWebhook() {
-  const r = tg_('getWebhookInfo');
-  if (r.result) delete r.result.url; // ne pas afficher le code secret
-  Logger.log(JSON.stringify(r));
-}
-
-function supprimerWebhook() {
-  Logger.log(JSON.stringify(tg_('deleteWebhook', { drop_pending_updates: true })));
-}
-
-// Test des outils SANS IA ni Telegram (lecture seule)
-function testOutils() {
-  const ss = getSS_();
-  const cats = lireCategories_(ss);
-  Logger.log(solde_(ss, 'POCHE'));
-  Logger.log(solde_(ss, 'SALAIRE'));
-  Logger.log(depensesCategorie_(ss, { libelle: 'COURSES' }, cats));
-}
-
-// Test avec l'IA mais SANS Telegram. Attention : une phrase d'ajout écrit vraiment dans le fichier (utilise ta copie !)
-function testPhrase() {
-  const phrase = 'combien il me reste en poche ?';
-  Logger.log(JSON.stringify(traiter_({ text: phrase })));
-}
+  if (stock.get('url') && stock.get('pass')) api({ action: 'ping' }).catch(function () {});   // réveille le script
+  if (!stock.get('url') || !stock.get('pass')) ouvrirReglages('Première utilisation : renseigne l\'adresse du script et ton mot de passe.');
+})();
+</script>
+</body>
+</html>
