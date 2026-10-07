@@ -158,7 +158,7 @@
     if (d) {
       var sec = function (ms) { return (ms / 1000).toFixed(1).replace('.', ',') + ' s'; };
       ch = (d.via === 'rapide' ? '⚡ sans IA' : '🧠 IA' + (d.modele ? ' (' + d.modele + ', ' + sec(d.msIA) + ')' : '')) +
-           ' · script ' + sec(d.ms) + (r.total ? ' · total ' + sec(r.total) : '');
+           ' · script ' + sec(d.ms) + (r.total ? ' · total ' + sec(r.total) : '') + (r.essais > 1 ? ' · 2e essai' : '');
     }
     $('#chrono').textContent = ch;
     dernierAnnul = r.undoId || null;
@@ -179,13 +179,28 @@
   }
 
   /* ---------- appel du script ---------- */
+  // Un appel = une demande (rid) ; en cas de coupure ou de page d'erreur Google, on réessaie UNE fois avec le même rid
+  // (le script reconnaît le rid et ne réécrit jamais deux fois la même ligne).
   function api(payload) {
     var url = stock.get('url'), pass = stock.get('pass');
     if (!url || !pass) { ouvrirReglages(); return Promise.reject(new Error('Renseigne d\'abord les réglages.')); }
-    var statut = 0, t0 = performance.now();
+    var rid = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    var debut = performance.now();
+    function essai(n) {
+      return unAppel(url, Object.assign({ canal: 'web', pass: pass, rid: rid }, payload)).then(function (j) {
+        j.total = performance.now() - debut; j.essais = n + 1; return j;
+      }).catch(function (e) {
+        if (e.reessayer && n < 1) return new Promise(function (ok) { setTimeout(ok, 1200); }).then(function () { return essai(n + 1); });
+        throw e;
+      });
+    }
+    return essai(0);
+  }
+
+  function unAppel(url, corps) {
+    var statut = 0;
     var ctrl = new AbortController();
     var t = setTimeout(function () { ctrl.abort(); }, 45000);
-    var corps = Object.assign({ canal: 'web', pass: pass }, payload);
     return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },  // évite la pré-requête CORS
@@ -195,19 +210,19 @@
     }).then(function (res) { statut = res.status; return res.text(); })
       .then(function (txt) {
         clearTimeout(t);
-        var j;
-        try { j = JSON.parse(txt); }
+        try { return JSON.parse(txt); }
         catch (e) {
-          var extrait = txt.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
-          throw new Error('Google a répondu autre chose que prévu (code ' + statut + ') : « ' + extrait + ' »');
+          var extrait = txt.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim().slice(0, 180);
+          var err = new Error('Google a répondu autre chose que prévu (code ' + statut + ') : « ' + extrait + ' »');
+          err.reessayer = true;
+          throw err;
         }
-        j.total = performance.now() - t0;
-        return j;
       })
       .catch(function (e) {
         clearTimeout(t);
         if (e.name === 'AbortError') throw new Error('Pas de réponse après 45 s. Réessaie ; si ça se répète, envoie-moi ce message.');
-        if (e instanceof TypeError) throw new Error('Impossible de joindre le script (' + e.message + '). Vérifie ton réseau et l\'adresse.');
+        if (e instanceof TypeError) { var e2 = new Error('Impossible de joindre le script (' + e.message + '). Vérifie ton réseau et l\'adresse.'); e2.reessayer = true; throw e2; }
         throw e;
       });
   }
@@ -354,7 +369,11 @@
       .catch(function (e) { occupe = false; etat(''); afficher({ ok: false, text: '⚠️ ' + e.message }); });
   };
 
-  if (stock.get('url') && stock.get('pass')) api({ action: 'ping' }).catch(function () {});   // réveille le script
+  if (stock.get('url') && stock.get('pass')) {   // réveille le script et mesure le temps de base (réseau + démarrage)
+    api({ action: 'ping' }).then(function (r) {
+      if (r && r.ok && !$('#chrono').textContent) $('#chrono').textContent = '📡 script joint en ' + (r.total / 1000).toFixed(1).replace('.', ',') + ' s';
+    }).catch(function () {});
+  }
   if (!stock.get('url') || !stock.get('pass')) ouvrirReglages('Première utilisation : renseigne l\'adresse du script et ton mot de passe.');
 })();
 </script>
