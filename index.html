@@ -1,0 +1,763 @@
+/**
+ * AGENT COMPTES — Telegram + Gemini (gratuit) + Google Sheets
+ * Outils : ajouter_ligne, solde, depenses_categorie
+ *
+ * Propriétés du script à créer (Paramètres du projet > Propriétés du script) :
+ *   TELEGRAM_TOKEN, GEMINI_KEY, CHAT_ID, WEBHOOK_SECRET
+ *   WEBAPP_URL   (URL du déploiement finissant par /exec, ajoutée après l'étape de déploiement)
+ *   WEB_PASSWORD (mot de passe long de la page vocale ; à saisir une fois sur le téléphone)
+ *   SHEET_ID     (optionnel : à ne remplir que si le script n'est pas lié au fichier)
+ *   GEMINI_MODEL (optionnel : remplace le modèle par défaut ci-dessous)
+ */
+
+const CFG = {
+  SHEET_ESPECES: 'BDD ARIARY ESPECES',
+  SHEET_BANQUE: 'BDD ARIARY BANQUE',
+  SHEET_PARAMS: 'PARAMETRES',
+  PARAMS_COL_CATEGORIES: 3,            // colonne C de PARAMETRES
+  TZ_USER: 'Indian/Antananarivo',      // sert uniquement à déterminer "aujourd'hui"
+  DEFAULT_MODEL: 'gemini-3.5-flash-lite', // le plus rapide et le moins saturé en premier
+  FALLBACK_MODEL: 'gemini-3.7-flash',     // utilisé si le premier est saturé
+};
+
+const MOIS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet',
+  'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+
+class UserError extends Error {}
+
+/* ======================= Utilitaires ======================= */
+
+function prop_(k) { return PropertiesService.getScriptProperties().getProperty(k); }
+
+function getSS_() {
+  const id = prop_('SHEET_ID');
+  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
+}
+
+function norm_(s) {
+  return String(s == null ? '' : s).trim().toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function fmt_(n) {
+  const neg = n < 0;
+  const abs = Math.abs(Math.round(n * 100) / 100);
+  const parts = String(abs).split('.');
+  const ent = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return (neg ? '-' : '') + ent + (parts[1] ? ',' + (parts[1] + '0').slice(0, 2) : '') + ' Ar';
+}
+
+function aujourdhui_() {
+  return Utilities.formatDate(new Date(), CFG.TZ_USER, 'yyyy-MM-dd');
+}
+
+/* ======================= Telegram ======================= */
+
+function tg_(method, payload) {
+  const res = UrlFetchApp.fetch('https://api.telegram.org/bot' + prop_('TELEGRAM_TOKEN') + '/' + method, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload || {}),
+    muteHttpExceptions: true,
+  });
+  return JSON.parse(res.getContentText());
+}
+
+function envoyer_(chatId, texte, boutons) {
+  const p = { chat_id: chatId, text: texte };
+  if (boutons) p.reply_markup = { inline_keyboard: boutons };
+  const r = tg_('sendMessage', p);
+  if (!r.ok) console.error('Telegram sendMessage a échoué : ' + JSON.stringify(r));
+  return r;
+}
+
+function telechargerFichier_(fileId) {
+  const info = tg_('getFile', { file_id: fileId });
+  if (!info.ok) throw new Error('getFile a échoué : ' + JSON.stringify(info));
+  const res = UrlFetchApp.fetch(
+    'https://api.telegram.org/file/bot' + prop_('TELEGRAM_TOKEN') + '/' + info.result.file_path);
+  return Utilities.base64Encode(res.getContent());
+}
+
+/* ======================= Point d'entrée (webhook) ======================= */
+
+function doGet() {
+  return ContentService.createTextOutput('OK');
+}
+
+function doPost(e) {
+  const ok = ContentService.createTextOutput('OK');
+  // Canal « page web vocale » : corps JSON avec canal = 'web' (le mot de passe est vérifié dans traiterWeb_)
+  const corps = lireCorps_(e);
+  if (corps && corps.canal === 'web') return jsonOut_(traiterWeb_(corps));
+  // 1) code secret dans l'URL : sinon on ignore silencieusement
+  if (!e || !e.parameter || e.parameter.s !== prop_('WEBHOOK_SECRET')) {
+    console.log('IGNORÉ : code secret absent ou incorrect dans l\'URL du webhook');
+    return ok;
+  }
+
+  const lock = LockService.getScriptLock();
+  try {
+    const update = JSON.parse(e.postData.contents);
+    // 2) anti-doublon (Telegram renvoie le même message à cause de la redirection 302) :
+    //    on le vérifie AVANT d'attendre le verrou, pour que les doublons repartent tout de suite
+    const cache = CacheService.getScriptCache();
+    const cle = 'upd_' + update.update_id;
+    if (cache.get(cle)) { console.log('IGNORÉ : doublon (update ' + update.update_id + ' déjà traité)'); return ok; }
+    lock.waitLock(25000);
+    if (cache.get(cle)) { console.log('IGNORÉ : doublon (update ' + update.update_id + ' déjà traité)'); return ok; }
+    cache.put(cle, '1', 21600);
+    console.log('REÇU : update ' + update.update_id + (update.callback_query ? ' (bouton)' : ' (message)'));
+
+    if (update.callback_query) traiterBouton_(update.callback_query);
+    else if (update.message) traiterMessage_(update.message);
+  } catch (err) {
+    console.error(err && err.stack ? err.stack : err);
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* rien */ }
+  }
+  return ok;
+}
+
+/* ======================= Canal web (page vocale) ======================= */
+
+function lireCorps_(e) {
+  try { return JSON.parse(e.postData.contents); } catch (_) { return null; }
+}
+
+function jsonOut_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// Version « à lire à voix haute » : sans émojis, sans séparateurs, montants lisibles
+function vocal_(t) {
+  return String(t)
+    .replace(/[\u{1F000}-\u{1FFFF}\u{2190}-\u{27BF}\u{FE0F}]/gu, '')
+    .replace(/(\d) (?=\d{3}(\D|$))/g, '$1')
+    .replace(/ Ar\b/g, ' ariary')
+    .replace(/\s*·\s*/g, ', ')
+    .replace(/\s*\n\s*/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function traiterWeb_(c) {
+  const t0 = Date.now();
+  DIAG_ = {};
+  const cache = CacheService.getScriptCache();
+  const echecs = Number(cache.get('web_echecs') || 0);
+  if (echecs >= 5) return { ok: false, auth: false, text: 'Trop d\'essais. Réessaie dans 10 minutes.' };
+  const mdp = prop_('WEB_PASSWORD');
+  if (!mdp || c.pass !== mdp) {
+    cache.put('web_echecs', String(echecs + 1), 600);
+    console.log('WEB : mot de passe refusé');
+    return { ok: false, auth: false, text: 'Mot de passe incorrect.' };
+  }
+  cache.remove('web_echecs');
+
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(25000);
+    let rep;
+    if (c.action === 'ping') {
+      rep = { text: 'Connexion OK.' };
+    } else if (c.action === 'annuler') {
+      rep = { text: annuler_(getSS_(), String(c.undoId || '')) };
+    } else {
+      const t = String(c.texte || '').trim();
+      if (!t) throw new UserError('Message vide.');
+      if (t.length > 500) throw new UserError('Message trop long.');
+      console.log('WEB : « ' + t + ' »');
+      rep = traiter_({ text: t });
+      console.log('WEB RÉPONSE : ' + rep.text.replace(/\n/g, ' | '));
+    }
+    return { ok: true, text: rep.text, parle: vocal_(rep.text), undoId: rep.undoId || null,
+             diag: { via: DIAG_.via || null, modele: DIAG_.modele || null, msIA: DIAG_.msIA || 0, ms: Date.now() - t0 } };
+  } catch (err) {
+    if (err instanceof UserError) return { ok: false, text: '⚠️ ' + err.message, parle: err.message };
+    console.error(err && err.stack ? err.stack : err);
+    return { ok: false, text: '⚠️ Erreur technique (détails dans les Exécutions d\'Apps Script).', parle: 'Erreur technique.' };
+  } finally {
+    try { lock.releaseLock(); } catch (_) { /* rien */ }
+  }
+}
+
+function traiterMessage_(msg) {
+  const chatId = String(msg.chat.id);
+  // 3) seul TON chat est autorisé
+  if (chatId !== String(prop_('CHAT_ID'))) {
+    console.log('IGNORÉ : message d\'un autre chat (' + chatId + ')');
+    return;
+  }
+
+  try {
+    console.log('MESSAGE : ' + (msg.text ? 'texte « ' + msg.text + ' »' : (msg.voice || msg.audio) ? 'vocal' : 'autre type'));
+    if (msg.text === '/start' || msg.text === '/aide') {
+      envoyer_(chatId, 'Exemples :\n• « sortie 12000 courses chez Score »\n• « entrée 500000 salaire le 25 septembre »\n' +
+        '• « combien il me reste en poche ? »\n• « combien j\'ai dépensé en courses ce mois-ci ? »');
+      return;
+    }
+    let entree;
+    const vocal = msg.voice || msg.audio;
+    if (vocal) {
+      if (vocal.duration && vocal.duration > 60) throw new UserError('Vocal trop long (60 s max).');
+      entree = { audio: telechargerFichier_(vocal.file_id), mime: vocal.mime_type || 'audio/ogg' };
+    } else if (msg.text) {
+      entree = { text: msg.text };
+    } else {
+      return;
+    }
+    tg_('sendChatAction', { chat_id: chatId, action: 'typing' });
+    const rep = traiter_(entree);
+    console.log('RÉPONSE : ' + rep.text.replace(/\n/g, ' | '));
+    envoyer_(chatId, rep.text, rep.undoId ? [[{ text: '↩️ Annuler', callback_data: 'u:' + rep.undoId }]] : null);
+  } catch (err) {
+    if (err instanceof UserError) {
+      envoyer_(chatId, '⚠️ ' + err.message);
+    } else {
+      console.error(err && err.stack ? err.stack : err);
+      envoyer_(chatId, '⚠️ Erreur technique (détails dans les Exécutions d\'Apps Script).');
+    }
+  }
+}
+
+function traiterBouton_(cb) {
+  const chatId = String(cb.message.chat.id);
+  if (chatId !== String(prop_('CHAT_ID'))) return;
+  tg_('answerCallbackQuery', { callback_query_id: cb.id });
+  tg_('editMessageReplyMarkup', {
+    chat_id: chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } });
+  try {
+    if (cb.data && cb.data.indexOf('u:') === 0) {
+      envoyer_(chatId, annuler_(getSS_(), cb.data.slice(2)));
+    }
+  } catch (err) {
+    envoyer_(chatId, err instanceof UserError ? '⚠️ ' + err.message : '⚠️ Erreur technique.');
+    if (!(err instanceof UserError)) console.error(err);
+  }
+}
+
+/* ======================= Cerveau : Gemini ======================= */
+
+const OUTILS = [{
+  functionDeclarations: [
+    {
+      name: 'ajouter_ligne',
+      description: 'Ajoute une ligne (entrée, sortie, versement ou virement) dans la feuille espèces ou banque.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          feuille: { type: 'STRING', enum: ['ESPECES', 'BANQUE'] },
+          mouvement: { type: 'STRING', enum: ['ENTREE', 'SORTIE', 'VERSEMENT', 'VIREMENT'] },
+          montant: { type: 'NUMBER', description: 'Montant en ariary, nombre positif.' },
+          libelle: { type: 'STRING', description: 'Catégorie, exactement une valeur de la liste fournie.' },
+          motif: { type: 'STRING', description: 'Détail libre et court.' },
+          date: { type: 'STRING', description: 'AAAA-MM-JJ, uniquement si l\'utilisateur donne une date.' },
+          type: { type: 'STRING', enum: ['POCHE', 'ZEH', 'SALAIRE', 'COURANT', 'EPARGNE', 'MITSIRY', '8%'] },
+          compte: { type: 'STRING', enum: ['BOA', 'BNI', 'ESPECES', 'MVOLA'], description: 'Banque uniquement.' },
+        },
+        required: ['feuille', 'mouvement', 'montant', 'libelle'],
+      },
+    },
+    {
+      name: 'solde',
+      description: 'Donne un solde actuel.',
+      parameters: {
+        type: 'OBJECT',
+        properties: { compte: { type: 'STRING', enum: ['POCHE', 'ZEH', 'SALAIRE', 'ESPECES', 'BANQUE'] } },
+        required: ['compte'],
+      },
+    },
+    {
+      name: 'depenses_categorie',
+      description: 'Somme des mouvements d\'une catégorie sur une période, espèces + banque cumulés.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          libelle: { type: 'STRING', description: 'Catégorie, exactement une valeur de la liste fournie.' },
+          mois: { type: 'INTEGER', description: '1 à 12. 0 = toute l\'année. Si absent : mois en cours.' },
+          annee: { type: 'INTEGER', description: 'Si absent : année en cours.' },
+          mouvement: { type: 'STRING', enum: ['SORTIE', 'ENTREE'], description: 'SORTIE par défaut.' },
+        },
+        required: ['libelle'],
+      },
+    },
+    {
+      name: 'demander_precision',
+      description: 'À utiliser si une information indispensable manque, si tu hésites, ou si le message est hors sujet.',
+      parameters: {
+        type: 'OBJECT',
+        properties: { question: { type: 'STRING', description: 'Question courte en français.' } },
+        required: ['question'],
+      },
+    },
+  ],
+}];
+
+function promptSysteme_(categories) {
+  return [
+    'Tu es l\'assistant comptable de l\'utilisateur (Madagascar, monnaie : ariary, Ar).',
+    'Tu transformes chaque message (texte ou vocal en français) en UN appel d\'outil.',
+    'Date du jour : ' + Utilities.formatDate(new Date(), CFG.TZ_USER, 'yyyy-MM-dd (EEEE)') + '.',
+    'Catégories valides pour "libelle" : ' + categories.map(function (c) { return c.trim(); }).join(', ') + '.',
+    'Règles :',
+    '- Feuille ESPECES par défaut (poche, cash, espèces, ZEH). BANQUE si banque, BOA, BNI, MVola, virement, carte.',
+    '- Montant : nombre en ariary sans séparateur ("12 000", "douze mille", "12k" = 12000).',
+    '- libelle = EXACTEMENT une catégorie de la liste (la plus proche). Le détail libre va dans motif (court).',
+    '- ESPECES : type POCHE par défaut, sauf si ZEH ou SALAIRE est mentionné.',
+    '- BANQUE : compte obligatoire (BOA, BNI, MVOLA ou ESPECES) ; type COURANT par défaut.',
+    '- N\'invente jamais de date : renseigne "date" seulement si l\'utilisateur en cite une ' +
+      '(convertis "le 25 septembre", "hier", "avant-hier" en AAAA-MM-JJ à partir de la date du jour).',
+    '- Question de solde -> solde. "Combien dépensé en X" -> depenses_categorie ("ce mois-ci" = mois en cours).',
+    '- Si une information indispensable manque, ou en cas de doute -> demander_precision avec une question courte.',
+  ].join('\n');
+}
+
+let DIAG_ = {};   // infos de diagnostic renvoyées à la page (modèle utilisé, durée IA)
+
+function appelGemini_(entree, categories) {
+  const principal = prop_('GEMINI_MODEL') || CFG.DEFAULT_MODEL;
+  const secours = prop_('GEMINI_MODEL_SECOURS') || CFG.FALLBACK_MODEL;
+  const cache = CacheService.getScriptCache();
+  const parts = entree.audio
+    ? [{ inlineData: { mimeType: entree.mime, data: entree.audio } }, { text: 'Message vocal de l\'utilisateur.' }]
+    : [{ text: entree.text }];
+  const base = {
+    systemInstruction: { parts: [{ text: promptSysteme_(categories) }] },
+    contents: [{ role: 'user', parts: parts }],
+    tools: OUTILS,
+    toolConfig: { functionCallingConfig: { mode: 'ANY' } },
+  };
+
+  function appeler(modele, avecPensee) {
+    const gen = { temperature: 0 };
+    // « Réflexion minimale » : beaucoup plus rapide pour une simple extraction de champs
+    if (avecPensee) gen.thinkingConfig = { thinkingLevel: 'minimal' };
+    return UrlFetchApp.fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/' + modele + ':generateContent', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'x-goog-api-key': prop_('GEMINI_KEY') },
+        payload: JSON.stringify(Object.assign({}, base, { generationConfig: gen })),
+        muteHttpExceptions: true,
+      });
+  }
+
+  // 1 essai sur le modèle principal, puis 1 sur le modèle de secours (erreurs temporaires 429 / 500 / 503, ou modèle introuvable 404)
+  const modeles = [principal, secours];
+  for (let i = 0; i < modeles.length; i++) {
+    const t0 = Date.now();
+    let avecPensee = !cache.get('sanspensee_' + modeles[i]);
+    let res = appeler(modeles[i], avecPensee);
+    if (res.getResponseCode() === 400 && avecPensee) {   // paramètre de réflexion non reconnu par ce modèle
+      cache.put('sanspensee_' + modeles[i], '1', 21600);
+      res = appeler(modeles[i], false);
+    }
+    const code = res.getResponseCode();
+    DIAG_.modele = modeles[i];
+    DIAG_.msIA = Date.now() - t0;
+    if (code === 200) {
+      const json = JSON.parse(res.getContentText());
+      const cand = json.candidates && json.candidates[0];
+      const ps = (cand && cand.content && cand.content.parts) || [];
+      const fc = ps.filter(function (p) { return p.functionCall; })[0];
+      return fc ? fc.functionCall : null;
+    }
+    if (code === 429 || code === 500 || code === 503 || code === 404) {
+      console.warn('Gemini ' + code + ' avec ' + modeles[i] + ' (' + DIAG_.msIA + ' ms) : ' + res.getContentText().slice(0, 200));
+      continue;
+    }
+    throw new Error('Gemini ' + code + ' : ' + res.getContentText().slice(0, 500));
+  }
+  throw new UserError('Gemini est surchargé ou saturé en ce moment. Réessaie dans une minute.');
+}
+
+/* ---------- Voie rapide : phrases courantes comprises SANS IA (quasi instantané) ---------- */
+
+function esc_(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function categoriesTrouvees_(txt, categories) {
+  const out = [];
+  categories.forEach(function (c) {
+    const k = norm_(c).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+    if (!k) return;
+    const sans = k.replace(/s$/, '');
+    const re = new RegExp('\\b(' + [esc_(k), esc_(sans), esc_(sans) + 's'].join('|') + ')\\b');
+    if (re.test(txt)) out.push(c);
+  });
+  return out;
+}
+
+const MOTS_BRUIT_ = ['j', 'ai', 'jai', 'de', 'du', 'des', 'd', 'la', 'le', 'les', 'l', 'en', 'pour', 'avec', 'sur', 'a', 'au', 'aux',
+  'un', 'une', 'ar', 'ariary', 'k', 'mille', 'ce', 'cette', 'mon', 'ma', 'mes', 'dans', 'et', 'hier', 'avant', 'aujourd', 'hui',
+  'chez', 'poche', 'zeh', 'salaire', 'especes', 'cash', 'banque', 'boa', 'bni', 'mvola', 'carte', 'il', 'y', 'c', 'est', 'me', 'te'];
+
+function rapide_(texte, categories) {
+  const brut = String(texte || '').trim();
+  const n = norm_(brut).toLowerCase().replace(/[’']/g, ' ');
+  if (!n) return null;
+
+  // Montant (ex. 12000, 12 000, 12k, 12 mille) ; tout autre chiffre dans la phrase (date, etc.) -> on laisse l'IA décider
+  const m = n.match(/(\d{1,3}(?:[ .]\d{3})+|\d+)\s*(k|mille)?\s*(?:ariary|ar)?(?![a-z0-9])/);
+  const reste = m ? (n.slice(0, m.index) + ' ' + n.slice(m.index + m[0].length)) : n;
+  if (/\d/.test(reste)) return null;
+  const montant = m ? Number(m[1].replace(/[ .]/g, '')) * (m[2] ? 1000 : 1) : null;
+
+  const cats = categoriesTrouvees_(reste, categories);
+  const MOIS_RE = /\b(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)\b/;
+
+  /* ----- Questions (pas de montant) ----- */
+  if (!m) {
+    const cibles = [];
+    if (/\bzeh\b/.test(n)) cibles.push('ZEH');
+    if (/\bpoche\b/.test(n)) cibles.push('POCHE');
+    if (/\bsalaire\b/.test(n)) cibles.push('SALAIRE');
+    if (/\b(banque|boa|bni|mvola)\b/.test(n)) cibles.push('BANQUE');
+    if (/\b(especes|cash|liquide)\b/.test(n)) cibles.push('ESPECES');
+    if (/\b(solde|reste|restant|disponible)\b/.test(n)) {
+      return cibles.length === 1 ? { name: 'solde', args: { compte: cibles[0] } } : null;
+    }
+    if (/\b(depens\w*|combien|total)\b/.test(n) && cats.length === 1) {
+      if (MOIS_RE.test(n) || /\b(dernier\w*|passe\w*|precedent\w*|semaine|hier|aujourd)\b/.test(n)) return null;
+      const a = { libelle: cats[0], mouvement: /\b(recu\w*|gagn\w*|entree\w*|touche\w*)\b/.test(n) ? 'ENTREE' : 'SORTIE' };
+      if (/\bannee\b/.test(n)) a.mois = 0;
+      return { name: 'depenses_categorie', args: a };
+    }
+    return null;
+  }
+
+  /* ----- Ajout d'une ligne (montant présent) ----- */
+  if (/\bcombien\b/.test(n) || brut.indexOf('?') >= 0) return null;
+  if (/\b(verse\w*|vire\w*|transf\w*|retrait\w*)\b/.test(n)) return null;
+  if (MOIS_RE.test(n) || /\b(demain|dernier\w*|prochain\w*|semaine|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/.test(n)) return null;
+
+  const sortie = /\b(depens\w*|sortie\w*|sorti|paye\w*|achet\w*|retir\w*|decaiss\w*)\b/.test(n);
+  const entree = /\b(recu\w*|gagn\w*|entree\w*|encaiss\w*|touche\w*|rentre\w*)\b/.test(n);
+  if (sortie === entree) return null;                       // ni l'un ni l'autre, ou les deux : doute -> IA
+
+  let c = cats.slice();
+  // « courses sur le salaire », « courses en poche », « courses mvola » : ces mots sont aussi des catégories -> on garde l'autre
+  if (c.length > 1) c = c.filter(function (x) { return ['SALAIRE', 'POCHE', 'MVOLA'].indexOf(norm_(x)) < 0; });
+  if (c.length !== 1) return null;
+
+  const aZeh = /\bzeh\b/.test(n), aSalaire = /\bsalaire\b/.test(n);
+  if (aZeh && aSalaire) return null;
+
+  const comptes = [];
+  if (/\bboa\b/.test(n)) comptes.push('BOA');
+  if (/\bbni\b/.test(n)) comptes.push('BNI');
+  if (/\bmvola\b/.test(n)) comptes.push('MVOLA');
+  const banque = /\b(banque|boa|bni|mvola|carte|virement)\b/.test(n);
+
+  const a = { mouvement: sortie ? 'SORTIE' : 'ENTREE', montant: montant, libelle: c[0] };
+  if (banque) {
+    if (comptes.length !== 1 || aZeh || aSalaire) return null;
+    a.feuille = 'BANQUE'; a.compte = comptes[0];
+  } else {
+    a.feuille = 'ESPECES';
+    a.type = aZeh ? 'ZEH' : aSalaire ? 'SALAIRE' : 'POCHE';
+  }
+  if (/\bavant hier\b/.test(n)) a.date = dateRelative_(2);
+  else if (/\bhier\b/.test(n)) a.date = dateRelative_(1);
+
+  // Motif : les mots restants (sans montant, catégorie, mots-outils)
+  const catMots = {};
+  c.forEach(function (x) {
+    const k = norm_(x).toLowerCase();
+    catMots[k] = 1; catMots[k.replace(/s$/, '')] = 1; catMots[k.replace(/s$/, '') + 's'] = 1;
+  });
+  const motif = (brut.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []).filter(function (w) {
+    const k = norm_(w).toLowerCase();
+    return !/^\d+k?$/.test(k) && MOTS_BRUIT_.indexOf(k) < 0 && !catMots[k] &&
+      !/^(depens|sort|paye|achet|retir|decaiss|recu|gagn|entre|encaiss|touch|rentr|virement)/.test(k);
+  }).join(' ').slice(0, 60);
+  if (motif) a.motif = motif.charAt(0).toUpperCase() + motif.slice(1);
+  return { name: 'ajouter_ligne', args: a };
+}
+
+function dateRelative_(jours) {
+  const d = new Date();
+  d.setDate(d.getDate() - jours);
+  return Utilities.formatDate(d, CFG.TZ_USER, 'yyyy-MM-dd');
+}
+
+function traiter_(entree) {
+  const ss = getSS_();
+  const categories = lireCategories_(ss);
+  let appel = entree.text ? rapide_(entree.text, categories) : null;
+  DIAG_.via = appel ? 'rapide' : 'ia';
+  if (!appel) appel = appelGemini_(entree, categories);
+  if (!appel) return { text: 'Je n\'ai pas compris. Peux-tu reformuler ?' };
+  return executerOutil_(ss, appel.name, appel.args || {}, categories);
+}
+
+/* ======================= Outils ======================= */
+
+function executerOutil_(ss, nom, a, categories) {
+  switch (nom) {
+    case 'ajouter_ligne': return ajouterLigne_(ss, a, categories);
+    case 'solde': return { text: solde_(ss, a.compte) };
+    case 'depenses_categorie': return { text: depensesCategorie_(ss, a, categories) };
+    case 'demander_precision': return { text: '🤔 ' + (a.question || 'Peux-tu préciser ?') };
+    default: throw new UserError('Outil inconnu : ' + nom);
+  }
+}
+
+function lireCategories_(ss) {
+  const sh = ss.getSheetByName(CFG.SHEET_PARAMS);
+  if (!sh) throw new UserError('Feuille introuvable : ' + CFG.SHEET_PARAMS);
+  const n = sh.getLastRow() - 1;
+  if (n < 1) return [];
+  return sh.getRange(2, CFG.PARAMS_COL_CATEGORIES, n, 1).getValues()
+    .map(function (r) { return r[0]; })
+    .filter(function (v) { return String(v).trim() !== ''; })
+    .map(String);
+}
+
+// En-têtes de la ligne 1 -> numéro de colonne (clé = premier mot sans accent, ex. "montant", "libelle")
+function enTetes_(sh) {
+  const map = {};
+  sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].forEach(function (h, i) {
+    const k = norm_(h).split(/[ (]/)[0].toLowerCase();
+    if (k && !(k in map)) map[k] = i + 1;
+  });
+  return map;
+}
+
+function nomFeuille_(code) {
+  return code === 'BANQUE' ? CFG.SHEET_BANQUE : CFG.SHEET_ESPECES;
+}
+
+// Lit toutes les lignes saisies (date renseignée) d'une feuille BDD
+function lireLignes_(ss, nomFeuille) {
+  const sh = ss.getSheetByName(nomFeuille);
+  if (!sh) throw new UserError('Feuille introuvable : ' + nomFeuille);
+  const map = enTetes_(sh);
+  const vals = sh.getDataRange().getValues();
+  const out = [];
+  for (let i = 1; i < vals.length; i++) {
+    const d = vals[i][map.date - 1];
+    if (!(d instanceof Date)) continue;
+    out.push({
+      row: i + 1,
+      date: d,
+      mouvement: norm_(vals[i][map.mouvement - 1]),
+      type: map.type ? norm_(vals[i][map.type - 1]) : '',
+      compte: map.compte ? norm_(vals[i][map.compte - 1]) : '',
+      montant: Number(vals[i][map.montant - 1]) || 0,
+      libelle: norm_(vals[i][map.libelle - 1]),
+      total: map.total ? vals[i][map.total - 1] : null,
+    });
+  }
+  return out;
+}
+
+function trouverCategorie_(categories, saisie) {
+  const n = norm_(saisie);
+  const trouvee = categories.filter(function (c) { return norm_(c) === n; })[0];
+  if (!trouvee) {
+    throw new UserError('Catégorie « ' + saisie + ' » inconnue. Catégories : ' +
+      categories.map(function (c) { return c.trim(); }).join(', ') + '.');
+  }
+  return trouvee; // valeur exacte de PARAMETRES (espaces éventuels compris)
+}
+
+/* ---------- ajouter_ligne ---------- */
+
+function ajouterLigne_(ss, a, categories) {
+  const feuille = a.feuille === 'BANQUE' ? 'BANQUE' : 'ESPECES';
+  const mouv = norm_(a.mouvement);
+  const montant = Number(a.montant);
+  if (!isFinite(montant) || montant <= 0) throw new UserError('Montant invalide.');
+  const libelle = trouverCategorie_(categories, a.libelle);
+  const motif = String(a.motif || '').trim();
+
+  let type, compte = null;
+  if (feuille === 'ESPECES') {
+    if (['ENTREE', 'SORTIE', 'VERSEMENT'].indexOf(mouv) < 0)
+      throw new UserError('Pour les espèces, le mouvement doit être ENTREE, SORTIE ou VERSEMENT.');
+    type = norm_(a.type) || 'POCHE';
+    if (['POCHE', 'ZEH', 'SALAIRE'].indexOf(type) < 0)
+      throw new UserError('Pour les espèces, le type doit être POCHE, ZEH ou SALAIRE.');
+  } else {
+    if (['ENTREE', 'SORTIE', 'VERSEMENT', 'VIREMENT'].indexOf(mouv) < 0)
+      throw new UserError('Mouvement invalide pour la banque.');
+    compte = norm_(a.compte);
+    if (['BOA', 'BNI', 'ESPECES', 'MVOLA'].indexOf(compte) < 0)
+      throw new UserError('Quel compte ? BOA, BNI, MVOLA ou ESPECES ?');
+    type = norm_(a.type) || 'COURANT';
+    if (['COURANT', 'EPARGNE', 'MITSIRY', '8%'].indexOf(type) < 0)
+      throw new UserError('Pour la banque, le type doit être COURANT, EPARGNE, MITSIRY ou 8%.');
+  }
+
+  // Date : celle donnée, sinon aujourd'hui. Construite dans le fuseau du classeur pour éviter tout décalage de jour.
+  const dateStr = a.date ? String(a.date).trim() : aujourdhui_();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) throw new UserError('Date invalide : ' + dateStr);
+  const tzSS = ss.getSpreadsheetTimeZone();
+  const dateObj = Utilities.parseDate(dateStr, tzSS, 'yyyy-MM-dd');
+  if (Utilities.formatDate(dateObj, tzSS, 'yyyy-MM-dd') !== dateStr) throw new UserError('Date inexistante : ' + dateStr);
+
+  const nomF = nomFeuille_(feuille);
+  const sh = ss.getSheetByName(nomF);
+  if (!sh) throw new UserError('Feuille introuvable : ' + nomF);
+  const map = enTetes_(sh);
+
+  // Colonnes MANUELLES uniquement. Mois, Année, Solde, TOTAL (formules) ne sont jamais touchées.
+  const champs = feuille === 'ESPECES'
+    ? { date: dateObj, mouvement: mouv, type: type, montant: montant, libelle: libelle, motif: motif }
+    : { date: dateObj, mouvement: mouv, compte: compte, type: type, montant: montant, libelle: libelle, motif: motif };
+  Object.keys(champs).forEach(function (k) {
+    if (!map[k]) throw new UserError('Colonne « ' + k + ' » introuvable dans ' + nomF + '.');
+  });
+
+  // Première ligne libre APRÈS la dernière ligne saisie
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) throw new UserError('La feuille ' + nomF + ' est vide.');
+  const colDate = sh.getRange(2, map.date, lastRow - 1, 1).getValues();
+  let derniere = 1;
+  for (let i = 0; i < colDate.length; i++) if (colDate[i][0] !== '' && colDate[i][0] != null) derniere = i + 2;
+  const ligne = derniere + 1;
+  if (ligne > lastRow) throw new UserError('Plus de ligne pré-remplie disponible dans ' + nomF + ' (étends tes formules vers le bas).');
+
+  // Sécurité : toutes les cellules manuelles de la ligne cible doivent être vides
+  Object.keys(champs).forEach(function (k) {
+    const v = sh.getRange(ligne, map[k]).getValue();
+    if (v !== '' && v != null) throw new UserError('La ligne ' + ligne + ' n\'est pas vide, j\'annule pour ne rien écraser.');
+  });
+  Object.keys(champs).forEach(function (k) { sh.getRange(ligne, map[k]).setValue(champs[k]); });
+
+  const undoId = Utilities.getUuid().slice(0, 8);
+  CacheService.getScriptCache().put('undo_' + undoId,
+    JSON.stringify({ feuille: nomF, ligne: ligne, montant: montant, cols: Object.keys(champs).map(function (k) { return map[k]; }) }),
+    21600);
+
+  const lignes = [
+    '✅ ' + (feuille === 'BANQUE' ? 'Banque' : 'Espèces') + ' · ligne ' + ligne,
+    mouv + ' · ' + (compte ? compte + ' · ' : '') + type + ' · ' + fmt_(montant),
+    libelle.trim() + (motif ? ' — ' + motif : ''),
+    '📅 ' + Utilities.formatDate(dateObj, tzSS, 'dd/MM/yyyy') + (a.date ? '' : ' (aujourd\'hui)'),
+  ];
+  return { text: lignes.join('\n'), undoId: undoId };
+}
+
+function annuler_(ss, undoId) {
+  const brut = CacheService.getScriptCache().get('undo_' + undoId);
+  if (!brut) throw new UserError('Annulation impossible (trop ancienne ou déjà faite). Corrige directement dans le Sheets.');
+  const u = JSON.parse(brut);
+  const sh = ss.getSheetByName(u.feuille);
+  const map = enTetes_(sh);
+  // On n'annule que la TOUTE DERNIÈRE ligne saisie, sinon la chaîne des soldes serait cassée
+  const suivante = sh.getLastRow() >= u.ligne + 1 ? sh.getRange(u.ligne + 1, map.date).getValue() : '';
+  if (suivante !== '' && suivante != null) throw new UserError('Une ligne plus récente existe déjà : corrige à la main dans le Sheets.');
+  const montantActuel = Number(sh.getRange(u.ligne, map.montant).getValue());
+  if (montantActuel !== u.montant) throw new UserError('La ligne a été modifiée entre-temps : corrige à la main.');
+  u.cols.forEach(function (c) { sh.getRange(u.ligne, c).clearContent(); });
+  CacheService.getScriptCache().remove('undo_' + undoId);
+  return '↩️ Ligne ' + u.ligne + ' annulée (' + u.feuille + ').';
+}
+
+/* ---------- solde ---------- */
+
+function solde_(ss, compte) {
+  const cible = norm_(compte);
+  if (cible === 'BANQUE') {
+    const l = lireLignes_(ss, CFG.SHEET_BANQUE);
+    if (!l.length) return 'Aucune ligne dans la feuille banque.';
+    const der = l[l.length - 1];
+    return '🏦 Banque (tous comptes, total de ta feuille) : ' + fmt_(Number(der.total) || 0) +
+      '\n(dernière ligne : ' + Utilities.formatDate(der.date, ss.getSpreadsheetTimeZone(), 'dd/MM/yyyy') + ')';
+  }
+  const lignes = lireLignes_(ss, CFG.SHEET_ESPECES);
+  let e = 0, s = 0, v = 0, dernier = null;
+  lignes.forEach(function (r) {
+    if (cible !== 'ESPECES' && r.type !== cible) return;
+    if (r.mouvement === 'ENTREE') e += r.montant;
+    else if (r.mouvement === 'SORTIE') s += r.montant;
+    else if (r.mouvement === 'VERSEMENT') v += r.montant;
+    dernier = r.date;
+  });
+  // Mêmes règles que tes TCD : poche et ZEH = entrées - sorties ; salaire et total espèces = entrées - sorties - versements
+  const total = (cible === 'POCHE' || cible === 'ZEH') ? e - s : e - s - v;
+  const icone = { POCHE: '👛', ZEH: '👛', SALAIRE: '💼', ESPECES: '💵' }[cible] || '💰';
+  const nom = { POCHE: 'En poche', ZEH: 'ZEH', SALAIRE: 'Salaire', ESPECES: 'Total espèces' }[cible] || cible;
+  return icone + ' ' + nom + ' : ' + fmt_(total) +
+    (dernier ? '\n(dernière ligne : ' + Utilities.formatDate(dernier, ss.getSpreadsheetTimeZone(), 'dd/MM/yyyy') + ')' : '');
+}
+
+/* ---------- depenses_categorie ---------- */
+
+function depensesCategorie_(ss, a, categories) {
+  const cat = trouverCategorie_(categories, a.libelle);
+  const mouv = norm_(a.mouvement) === 'ENTREE' ? 'ENTREE' : 'SORTIE';
+  const tz = ss.getSpreadsheetTimeZone();
+  const auj = aujourdhui_().split('-');
+  const annee = a.annee ? Number(a.annee) : Number(auj[0]);
+  const mois = (a.mois === 0 || a.mois === '0') ? 0 : (a.mois ? Number(a.mois) : Number(auj[1]));
+  if (mois < 0 || mois > 12) throw new UserError('Mois invalide.');
+
+  function somme(nomF) {
+    let t = 0, n = 0;
+    lireLignes_(ss, nomF).forEach(function (r) {
+      if (r.mouvement !== mouv || r.libelle !== norm_(cat)) return;
+      if (Number(Utilities.formatDate(r.date, tz, 'yyyy')) !== annee) return;
+      if (mois && Number(Utilities.formatDate(r.date, tz, 'M')) !== mois) return;
+      t += r.montant; n++;
+    });
+    return { t: t, n: n };
+  }
+  const esp = somme(CFG.SHEET_ESPECES);
+  const ban = somme(CFG.SHEET_BANQUE);
+  const periode = mois ? MOIS_FR[mois - 1] + ' ' + annee : 'année ' + annee;
+  return [
+    '🧾 ' + cat.trim() + ' — ' + periode + ' (' + (mouv === 'SORTIE' ? 'sorties' : 'entrées') + ')',
+    'Espèces : ' + fmt_(esp.t) + ' (' + esp.n + ' ligne' + (esp.n > 1 ? 's' : '') + ')',
+    'Banque : ' + fmt_(ban.t) + ' (' + ban.n + ' ligne' + (ban.n > 1 ? 's' : '') + ')',
+    'Total : ' + fmt_(esp.t + ban.t),
+  ].join('\n');
+}
+
+/* ======================= Installation & tests (à lancer à la main) ======================= */
+
+// À lancer UNE fois, après avoir déployé l'application web et renseigné WEBAPP_URL
+function installerWebhook() {
+  const url = prop_('WEBAPP_URL') + '?s=' + encodeURIComponent(prop_('WEBHOOK_SECRET'));
+  const res = tg_('setWebhook', { url: url, allowed_updates: ['message', 'callback_query'], drop_pending_updates: true });
+  Logger.log(JSON.stringify(res));
+}
+
+// À utiliser À LA PLACE de installerWebhook quand on passe par le relais Cloudflare
+// Propriétés requises : RELAIS_URL (adresse du Worker) et TG_SECRET_TOKEN (lettres, chiffres, _ ou -)
+function installerWebhookRelais() {
+  const res = tg_('setWebhook', {
+    url: prop_('RELAIS_URL'),
+    secret_token: prop_('TG_SECRET_TOKEN'),
+    allowed_updates: ['message', 'callback_query'],
+    drop_pending_updates: true,
+  });
+  Logger.log(JSON.stringify(res));
+}
+
+function infoWebhook() {
+  const r = tg_('getWebhookInfo');
+  if (r.result) delete r.result.url; // ne pas afficher le code secret
+  Logger.log(JSON.stringify(r));
+}
+
+function supprimerWebhook() {
+  Logger.log(JSON.stringify(tg_('deleteWebhook', { drop_pending_updates: true })));
+}
+
+// Test des outils SANS IA ni Telegram (lecture seule)
+function testOutils() {
+  const ss = getSS_();
+  const cats = lireCategories_(ss);
+  Logger.log(solde_(ss, 'POCHE'));
+  Logger.log(solde_(ss, 'SALAIRE'));
+  Logger.log(depensesCategorie_(ss, { libelle: 'COURSES' }, cats));
+}
+
+// Test avec l'IA mais SANS Telegram. Attention : une phrase d'ajout écrit vraiment dans le fichier (utilise ta copie !)
+function testPhrase() {
+  const phrase = 'combien il me reste en poche ?';
+  Logger.log(JSON.stringify(traiter_({ text: phrase })));
+}
