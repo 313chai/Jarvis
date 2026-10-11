@@ -1,544 +1,257 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="fr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#FAF9F5" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
-<meta name="color-scheme" content="light dark">
+<title>Compta Arif</title>
+<meta name="theme-color" content="#0f1115">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Jarvis">
-<meta name="robots" content="noindex">
-<title>Jarvis</title>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Compta">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-512.png">
 <style>
   :root {
-    --bg: #FAF9F5; --surface: #FFFFFF; --user: #F0EEE6; --text: #1F1E1D; --muted: #73726C;
-    --line: #E6E3D8; --accent: #D97757; --accent-ink: #FFFFFF; --danger: #B5412F;
-    --shadow: 0 1px 2px rgba(31,30,29,.04), 0 8px 24px rgba(31,30,29,.07);
-    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
-    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+    --bg: #0f1115; --panel: #181b22; --panel2: #20242d; --text: #eef0f4; --muted: #9aa1ad;
+    --accent: #4f8cff; --accent2: #2f6be0; --ok: #2fbf71; --danger: #ef5b5b; --border: #2a2f3a;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #262624; --surface: #30302E; --user: #3A3936; --text: #F5F4EE; --muted: #A8A59B;
-      --line: #43413D; --danger: #E58C7C; --shadow: none;
-    }
-  }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
-  button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; padding: 0; }
-  svg { display: block; }
-
-  #app { height: 100dvh; display: flex; flex-direction: column; max-width: 640px; margin: 0 auto;
-    padding-top: env(safe-area-inset-top); }
-
-  header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 6px; }
-  .marque { font: 500 22px var(--serif); letter-spacing: .2px; }
-  .barre { display: flex; gap: 4px; }
-  .rond { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; color: var(--muted); }
-  .rond:active { background: var(--user); }
-  .rond[aria-pressed="false"] { opacity: .55; }
-
-  #fil { flex: 1; overflow-y: auto; padding: 8px 18px 12px; -webkit-overflow-scrolling: touch; }
-
-  /* Accueil */
-  #accueil { padding: 12vh 4px 0; }
-  #accueil h1 { font: 400 36px/1.15 var(--serif); margin: 0 0 10px; }
-  #accueil p { margin: 0 0 22px; color: var(--muted); font-size: 16px; line-height: 1.5; }
-  #accueil ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  #accueil li { color: var(--muted); font-size: 15px; padding-left: 14px; border-left: 2px solid var(--line); }
-
-  /* Messages */
-  .msg { margin: 0 0 22px; }
-  .msg.user { display: flex; justify-content: flex-end; }
-  .bulle { background: var(--user); padding: 10px 15px; border-radius: 18px 18px 6px 18px; max-width: 85%;
-    font-size: 16px; line-height: 1.4; word-break: break-word; }
-  .titre { font: 400 22px/1.3 var(--serif); display: flex; gap: 10px; align-items: flex-start; }
-  .titre .ic { color: var(--accent); margin-top: 3px; flex: none; }
-  .msg.erreur .titre { font-size: 17px; color: var(--danger); }
-  .msg.erreur .titre .ic { color: var(--danger); }
-  .detail { font-size: 15px; line-height: 1.55; color: var(--muted); margin-top: 3px; }
-  .titre + .detail { margin-top: 6px; }
-  .meta { font-size: 12px; color: var(--muted); margin-top: 12px; opacity: .85; }
-  .actions-msg { margin-top: 12px; display: flex; gap: 8px; }
-  .ghost { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px;
-    padding: 8px 12px; font-size: 14px; color: var(--text); background: var(--surface); }
-  .ghost:active { background: var(--user); }
-
-  .options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; max-height: 280px; overflow-y: auto; }
-  .opt { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 9px 15px; font-size: 15px; }
-  .opt:active { background: var(--user); }
-  .opt.neutre { color: var(--muted); background: transparent; }
-  .options.fini .opt { opacity: .45; pointer-events: none; }
-
-  .pensee { display: inline-flex; gap: 5px; padding: 8px 0; }
-  .pensee i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .35; animation: point 1.2s infinite; }
-  .pensee i:nth-child(2) { animation-delay: .15s; } .pensee i:nth-child(3) { animation-delay: .3s; }
-  @keyframes point { 0%, 80%, 100% { opacity: .25; transform: none; } 40% { opacity: 1; transform: translateY(-3px); } }
-
-  /* Bas de page */
-  #dock { padding: 4px 14px calc(12px + env(safe-area-inset-bottom)); }
-  #raccourcis { display: flex; gap: 8px; overflow-x: auto; padding: 4px 4px 12px; scrollbar-width: none; }
-  #raccourcis::-webkit-scrollbar { display: none; }
-  .chip { flex: none; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line);
-    background: var(--surface); border-radius: 999px; padding: 9px 15px 9px 12px; font-size: 14px; font-weight: 500; }
-  .chip .ic { color: var(--accent); }
-  .chip:active { background: var(--user); }
-
-  #composer { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line);
-    border-radius: 28px; padding: 6px 6px 6px 20px; box-shadow: var(--shadow); }
-  #texte { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text);
-    font: 16px var(--sans); padding: 10px 0; }
-  #texte::placeholder { color: var(--muted); }
-  #action { width: 44px; height: 44px; flex: none; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
-    display: grid; place-items: center; transition: transform .12s; }
-  #action:active { transform: scale(.94); }
-  #action.ecoute { animation: halo 1.3s infinite; }
-  #action.occupe { background: var(--user); color: var(--muted); }
-  #action.occupe svg { animation: tour 1s linear infinite; }
-  @keyframes halo { 0% { box-shadow: 0 0 0 0 rgba(217,119,87,.55); } 100% { box-shadow: 0 0 0 16px rgba(217,119,87,0); } }
-  @keyframes tour { to { transform: rotate(360deg); } }
-
-  /* Réglages */
-  #reglages { position: fixed; inset: 0; background: var(--bg); display: none; overflow: auto; z-index: 10;
-    padding: calc(env(safe-area-inset-top) + 18px) 20px 24px; }
-  #reglages.ouvert { display: block; }
-  #reglages .contenu { max-width: 560px; margin: 0 auto; display: grid; gap: 16px; }
-  #reglages h2 { font: 400 28px var(--serif); margin: 4px 0 0; }
-  .note { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0; }
-  label.champ { display: grid; gap: 7px; font-size: 14px; color: var(--muted); }
-  select, input[type=url], input[type=password] { width: 100%; background: var(--surface); border: 1px solid var(--line); color: var(--text);
-    border-radius: 12px; padding: 13px 14px; font: 16px var(--sans); }
-  select { appearance: none; -webkit-appearance: none; }
-  .ligne-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 16px; padding: 4px 0; }
-  .ligne-opt input { width: 22px; height: 22px; accent-color: var(--accent); }
-  .btn { background: var(--text); color: var(--bg); border-radius: 12px; padding: 14px 16px; font-size: 16px; font-weight: 500; }
-  .btn.sec { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 400; }
-  #msg-reglages { min-height: 20px; font-size: 14px; color: var(--muted); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  header { display: flex; align-items: center; gap: 10px; padding: calc(env(safe-area-inset-top) + 12px) 16px 12px;
+    border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  header .dot.on { background: var(--ok); }
+  .icon-btn { background: none; border: 0; color: var(--text); font-size: 20px; padding: 6px; cursor: pointer; }
+  main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; max-width: 760px; width: 100%; margin: 0 auto; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 18px; white-space: pre-wrap; word-wrap: break-word; }
+  .moi { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 6px; }
+  .ia { align-self: flex-start; background: var(--panel2); border-bottom-left-radius: 6px; }
+  .ia.err { border: 1px solid var(--danger); }
+  .confirm { align-self: flex-start; background: var(--panel); border: 1px solid var(--accent); border-radius: 14px; padding: 12px 14px; max-width: 90%; }
+  .confirm .btns { display: flex; gap: 8px; margin-top: 10px; }
+  .confirm button { flex: 1; border: 0; border-radius: 10px; padding: 10px; font-size: 15px; cursor: pointer; color: #fff; }
+  .confirm .oui { background: var(--ok); } .confirm .non { background: #444b58; }
+  .typing { align-self: flex-start; color: var(--muted); font-size: 14px; padding: 4px 8px; }
+  .chips { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 8px; max-width: 760px; width: 100%; margin: 0 auto; scrollbar-width: none; }
+  .chip { flex: none; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 16px; padding: 6px 12px; font-size: 14px; cursor: pointer; }
+  footer { padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px); background: var(--panel); border-top: 1px solid var(--border); }
+  .bar { display: flex; gap: 8px; align-items: center; max-width: 760px; margin: 0 auto; }
+  .bar input { flex: 1; min-width: 0; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 22px; padding: 12px 16px; font-size: 16px; outline: none; }
+  .round { width: 48px; height: 48px; flex: none; border-radius: 50%; border: 0; cursor: pointer; display: grid; place-items: center; font-size: 20px; color: #fff; background: var(--accent); }
+  .round.mic.rec { background: var(--danger); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,91,91,.6); } 50% { box-shadow: 0 0 0 10px rgba(239,91,91,0); } }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 16px; width: min(92vw, 420px); padding: 18px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  dialog input, dialog select { width: 100%; background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 10px; font-size: 16px; }
+  dialog .row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  dialog .row input { width: auto; }
+  dialog .actions { display: flex; gap: 8px; margin-top: 16px; }
+  dialog .actions button { flex: 1; padding: 10px; border-radius: 10px; border: 0; font-size: 15px; cursor: pointer; }
+  .primary { background: var(--accent); color: #fff; } .secondary { background: #444b58; color: #fff; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
 </style>
 </head>
 <body>
-<div id="app">
-  <header>
-    <div class="marque">Jarvis</div>
-    <div class="barre">
-      <button class="rond" id="btn-voix" aria-label="Réponse vocale" aria-pressed="true"></button>
-      <button class="rond" id="btn-reglages" aria-label="Réglages"></button>
-    </div>
-  </header>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>Compta Arif</h1>
+  <button class="icon-btn" id="voixBtn" title="Lecture à voix haute">🔊</button>
+  <button class="icon-btn" id="reglagesBtn" title="Réglages">⚙️</button>
+</header>
 
-  <main id="fil">
-    <section id="accueil">
-      <h1 id="salut">Bonjour</h1>
-      <p>Dis une dépense ou une entrée, ou demande un solde.</p>
-      <ul>
-        <li>« sortie 7000 poche repas »</li>
-        <li>« entrée 20000 mvola dons »</li>
-        <li>« combien j'ai dépensé en courses ce mois-ci »</li>
-      </ul>
-    </section>
-  </main>
+<main id="fil"></main>
 
-  <footer id="dock">
-    <div id="raccourcis"></div>
-    <div id="composer">
-      <input id="texte" type="text" placeholder="Écris ou touche le micro" autocomplete="off" enterkeyhint="send">
-      <button id="action" aria-label="Parler"></button>
-    </div>
-  </footer>
-</div>
+<div class="chips" id="chips"></div>
+<footer>
+  <form class="bar" id="form">
+    <input id="saisie" placeholder="Pose ta question ou dicte une dépense…" autocomplete="off" enterkeyhint="send">
+    <button type="button" class="round mic" id="micBtn" title="Parler">🎤</button>
+    <button type="submit" class="round" title="Envoyer">➤</button>
+  </form>
+</footer>
 
-<div id="reglages">
-  <div class="contenu">
-    <h2>Réglages</h2>
-    <p class="note">Ces informations restent uniquement dans ce navigateur, sur cet appareil. Elles ne sont jamais écrites dans la page.</p>
-    <label class="champ">Adresse du script (se termine par /exec, sans « ?s= »)
-      <input id="champ-url" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
-    </label>
-    <label class="champ">Mot de passe
-      <input id="champ-pass" type="password" autocomplete="off">
-    </label>
-    <label class="champ">Voix de lecture
-      <select id="champ-voix"></select>
-    </label>
-    <button class="btn sec" id="test-voix" type="button">Écouter un exemple</button>
-    <p class="note">Pour une voix plus naturelle : Réglages de l'iPhone, Accessibilité, Contenu énoncé, Voix, Français, puis télécharge une voix « Premium » ou « Améliorée ». Elle apparaîtra ici.</p>
-    <label class="ligne-opt"><span>Relire avant d'envoyer (voix)</span><input type="checkbox" id="opt-relire"></label>
-    <div id="msg-reglages"></div>
-    <button class="btn" id="sauver">Enregistrer et tester</button>
-    <button class="btn sec" id="fermer">Fermer</button>
-    <button class="btn sec" id="oublier">Effacer ces réglages de cet appareil</button>
+<dialog id="reglages">
+  <h3 style="margin:0">Réglages</h3>
+  <label for="url">Adresse de l'API (Apps Script)</label>
+  <input id="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+  <label for="pin">Code PIN</label>
+  <input id="pin" type="password" inputmode="numeric" autocomplete="off">
+  <label for="voix">Voix</label>
+  <select id="voix"></select>
+  <div class="hint">Pour une voix plus humaine : sur iPhone, Réglages › Accessibilité › Contenu énoncé › Voix › Français, télécharge une voix « Premium » ou « Améliorée ». Sur PC, Microsoft Edge propose des voix « Natural ».</div>
+  <label for="vitesse">Vitesse de la voix</label>
+  <input id="vitesse" type="range" min="0.8" max="1.4" step="0.05">
+  <div class="row"><input type="checkbox" id="auto"><span>Envoyer automatiquement après la dictée</span></div>
+  <div class="actions">
+    <button class="secondary" id="testVoix" type="button">Tester la voix</button>
+    <button class="primary" id="enregistrer" type="button">Enregistrer</button>
   </div>
-</div>
+</dialog>
 
 <script>
-(function () {
-  'use strict';
-  var $ = function (s) { return document.querySelector(s); };
-
-  /* ---------- icônes (traits fins, style Lucide) ---------- */
-  var ICONES = {
-    mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>',
-    send: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
-    stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
-    loader: '<path d="M21 12a9 9 0 1 1-6.2-8.55"/>',
-    reglages: '<path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/>',
-    volume: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>',
-    muet: '<path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
-    annuler: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
-    check: '<path d="M20 6 9 17l-5-5"/>',
-    alerte: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
-    poche: '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
-    salaire: '<rect width="20" height="14" x="2" y="7" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
-    zeh: '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>',
-    mvola: '<rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/>',
-    especes: '<rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/>'
+(() => {
+  const $ = id => document.getElementById(id);
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('compta.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem('compta.' + k, JSON.stringify(v)); } catch {} }
   };
-  function svg(nom, taille) {
-    taille = taille || 20;
-    return '<svg class="ic" viewBox="0 0 24 24" width="' + taille + '" height="' + taille +
-      '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-      (ICONES[nom] || '') + '</svg>';
+  let reglages = store.get('reglages', { url: '', pin: '', voix: '', vitesse: 1.05, auto: true, parler: true });
+  let historique = store.get('historique', []);
+  const fil = $('fil');
+
+  /* ---------- affichage ---------- */
+  function bulle(texte, qui, classe) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + qui + (classe ? ' ' + classe : '');
+    d.textContent = texte;
+    fil.appendChild(d);
+    fil.scrollTop = fil.scrollHeight;
+    return d;
+  }
+  function carteConfirmation(op) {
+    const d = document.createElement('div');
+    d.className = 'confirm';
+    d.innerHTML = '<div></div><div class="btns"><button class="oui">Confirmer</button><button class="non">Annuler</button></div>';
+    d.firstChild.textContent = op.resume;
+    d.querySelector('.oui').onclick = async () => {
+      d.querySelector('.btns').remove();
+      const r = await api({ action: 'executer', operation: op });
+      const t = r.ok ? '✅ ' + r.resultat : '❌ ' + r.erreur;
+      bulle(t, 'ia', r.ok ? '' : 'err'); parler(r.ok ? 'C\'est fait.' : r.erreur);
+    };
+    d.querySelector('.non').onclick = () => { d.querySelector('.btns').remove(); bulle('Annulé.', 'ia'); };
+    fil.appendChild(d); fil.scrollTop = fil.scrollHeight;
+  }
+  historique.slice(-20).forEach(h => bulle(h.text, h.role === 'user' ? 'moi' : 'ia'));
+  if (!historique.length) bulle('Bonjour Arif ! Demande-moi par exemple « combien j\'ai dépensé en courses en espèces le mois dernier ? » ou « ajoute une dépense de 150 000 Ar en courses ».', 'ia');
+
+  const suggestions = ['Combien en courses le mois dernier ?', 'Combien j\'ai dépensé en plaisirs sur mvola ?',
+    'Combien il me restait fin mai ?', 'Mes 5 dernières dépenses', 'Combien j\'ai en espèces ?'];
+  suggestions.forEach(s => { const b = document.createElement('button'); b.className = 'chip'; b.textContent = s; b.onclick = () => envoyer(s); $('chips').appendChild(b); });
+
+  /* ---------- API ---------- */
+  async function api(corps) {
+    if (!reglages.url || !reglages.pin) { $('reglages').showModal(); return { ok: false, erreur: 'Renseigne l\'adresse de l\'API et ton PIN dans les réglages.' }; }
+    try {
+      // text/plain évite la requête préalable CORS, que Apps Script ne gère pas
+      const r = await fetch(reglages.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ ...corps, pin: reglages.pin }) });
+      const j = await r.json(); $('dot').classList.toggle('on', !!j.ok); return j;
+    } catch (e) { $('dot').classList.remove('on'); return { ok: false, erreur: 'Connexion impossible : ' + e.message }; }
   }
 
-  var RACCOURCIS = [
-    { ic: 'poche',   label: 'Solde poche',   q: 'Solde poche' },
-    { ic: 'salaire', label: 'Solde salaire', q: 'Solde salaire' },
-    { ic: 'zeh',     label: 'Solde ZEH',     q: 'Solde ZEH' },
-    { ic: 'mvola',   label: 'Solde MVola',   q: 'Solde MVola' },
-    { ic: 'especes', label: 'Total espèces', q: 'Total espèces' }
-  ];
-
-  /* ---------- stockage local ---------- */
-  var stock = {
-    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
-    del: function (k) { try { localStorage.removeItem(k); } catch (e) {} }
-  };
-
-  var rec = null, ecoute = false, occupe = false, attente = null;
-  var voixActive = stock.get('voix') !== '0';
-  var relire = stock.get('relire') === '1';
-
-  /* ---------- outils d'affichage ---------- */
-  function sansEmoji(t) {
-    return String(t || '').replace(/[\u{1F000}-\u{1FFFF}\u{2190}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu, '').replace(/[ \t]+/g, ' ').trim();
+  async function envoyer(texte, audio) {
+    texte = (texte || '').trim();
+    if (!texte && !audio) return;
+    stopParler();
+    const maBulle = bulle(texte || '🎤 …', 'moi');
+    $('saisie').value = '';
+    const attente = document.createElement('div'); attente.className = 'typing'; attente.textContent = 'Je regarde dans tes comptes…'; fil.appendChild(attente);
+    const r = await api({ action: 'discuter', message: texte, audio, historique: historique.slice(-8) });
+    attente.remove();
+    if (!r.ok) { bulle(r.erreur, 'ia', 'err'); return; }
+    if (r.transcription) maBulle.textContent = r.transcription;
+    const question = r.transcription || texte;
+    bulle(r.reponse, 'ia'); parler(r.reponse);
+    if (r.confirmation) carteConfirmation(r.confirmation);
+    historique.push({ role: 'user', text: question }, { role: 'model', text: r.reponse });
+    historique = historique.slice(-40); store.set('historique', historique);
   }
-  function sec(ms) { return (ms / 1000).toFixed(1).replace('.', ',') + ' s'; }
-  function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
-  function defiler() { requestAnimationFrame(function () { var f = $('#fil'); f.scrollTop = f.scrollHeight; }); }
+  $('form').onsubmit = e => { e.preventDefault(); envoyer($('saisie').value); };
 
-  function ajouter(noeud) {
-    var a = $('#accueil'); if (a) a.remove();
-    var fil = $('#fil');
-    fil.appendChild(noeud);
-    while (fil.children.length > 14) fil.removeChild(fil.firstChild);
-    defiler();
-  }
-  function retirerUndo() {
-    Array.prototype.forEach.call(document.querySelectorAll('.undo'), function (b) { b.parentNode.remove(); });
-  }
-  function figerOptions() {
-    Array.prototype.forEach.call(document.querySelectorAll('.options'), function (o) { o.classList.add('fini'); });
-  }
-
-  function msgUtilisateur(texte) {
-    var m = el('div', 'msg user'); var b = el('div', 'bulle'); b.textContent = texte; m.appendChild(b); ajouter(m);
-  }
-  function msgPensee() {
-    var m = el('div', 'msg assistant'); m.appendChild(el('div', 'pensee', '<i></i><i></i><i></i>')); ajouter(m); return m;
-  }
-
-  function msgAssistant(r) {
-    var m = el('div', 'msg assistant' + (r.ok ? '' : ' erreur'));
-    var lignes = sansEmoji(r.text).split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
-    var titre = el('div', 'titre');
-    var pic = !r.ok ? 'alerte' : (r.undoId ? 'check' : '');
-    if (pic) titre.insertAdjacentHTML('beforeend', svg(pic, 20));
-    var t = el('span'); t.textContent = lignes[0] || ''; titre.appendChild(t);
-    m.appendChild(titre);
-    lignes.slice(1).forEach(function (l) { var d = el('div', 'detail'); d.textContent = l; m.appendChild(d); });
-
-    // Question avec boutons (champ obligatoire manquant)
-    if (r.ask) {
-      var box = el('div', 'options');
-      (r.ask.options || []).forEach(function (o) {
-        var b = el('button', 'opt'); b.type = 'button'; b.textContent = o.label;
-        b.onclick = function () { choisir(r.ask.champ, o); };
-        box.appendChild(b);
-      });
-      var stop = el('button', 'opt neutre'); stop.type = 'button'; stop.textContent = 'Annuler la saisie';
-      stop.onclick = function () { attente = null; figerOptions(); noteAnnulee(); };
-      box.appendChild(stop);
-      if (r.ask.options && r.ask.options.length) m.appendChild(box); else {
-        // montant : réponse libre, on laisse la zone de texte
-        var aide = el('div', 'detail'); aide.textContent = 'Écris ou dis le montant.'; m.appendChild(aide);
-        var seul = el('div', 'options'); seul.appendChild(stop); m.appendChild(seul);
-      }
-    }
-
-    if (r.undoId) {
-      var ac = el('div', 'actions-msg');
-      var u = el('button', 'ghost undo', svg('annuler', 16) + '<span>Annuler cette ligne</span>');
-      u.type = 'button'; u.onclick = function () { retirerUndo(); traiter({ action: 'annuler', undoId: r.undoId }); };
-      ac.appendChild(u); m.appendChild(ac);
-    }
-    if (r.diag) {
-      var d = r.diag;
-      var meta = (d.via === 'rapide' ? 'Sans IA' : 'IA' + (d.modele ? ' (' + d.modele + ', ' + sec(d.msIA) + ')' : '')) +
-        ' · script ' + sec(d.ms) + (r.total ? ' · total ' + sec(r.total) : '') + (r.essais > 1 ? ' · 2e essai' : '');
-      m.appendChild(el('div', 'meta', meta));
-    }
-    ajouter(m);
-  }
-  function noteAnnulee() { var m = el('div', 'msg assistant'); m.appendChild(el('div', 'detail', 'Saisie annulée.')); ajouter(m); }
-
-  /* ---------- appel du script (avec anti-doublon et un réessai) ---------- */
-  function api(payload) {
-    var url = stock.get('url'), pass = stock.get('pass');
-    if (!url || !pass) { ouvrirReglages(); return Promise.reject(new Error('Renseigne d\'abord les réglages.')); }
-    var rid = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-    var debut = performance.now();
-    function essai(n) {
-      return unAppel(url, Object.assign({ canal: 'web', pass: pass, rid: rid }, payload)).then(function (j) {
-        j.total = performance.now() - debut; j.essais = n + 1; return j;
-      }).catch(function (e) {
-        if (e.reessayer && n < 1) return new Promise(function (ok) { setTimeout(ok, 1200); }).then(function () { return essai(n + 1); });
-        throw e;
-      });
-    }
-    return essai(0);
-  }
-  function unAppel(url, corps) {
-    var statut = 0, ctrl = new AbortController();
-    var t = setTimeout(function () { ctrl.abort(); }, 45000);
-    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(corps), redirect: 'follow', signal: ctrl.signal })
-      .then(function (res) { statut = res.status; return res.text(); })
-      .then(function (txt) {
-        clearTimeout(t);
-        try { return JSON.parse(txt); }
-        catch (e) {
-          var extrait = txt.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ')
-            .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim().slice(0, 180);
-          var err = new Error('Google a répondu autre chose que prévu (code ' + statut + ') : « ' + extrait + ' »');
-          err.reessayer = true; throw err;
-        }
-      })
-      .catch(function (e) {
-        clearTimeout(t);
-        if (e.name === 'AbortError') throw new Error('Pas de réponse après 45 s. Réessaie ; si ça se répète, envoie-moi ce message.');
-        if (e instanceof TypeError) { var e2 = new Error('Impossible de joindre le script (' + e.message + '). Vérifie ton réseau et l\'adresse.'); e2.reessayer = true; throw e2; }
-        throw e;
-      });
-  }
-
-  /* ---------- voix de sortie ---------- */
-  function voixFr() {
-    var vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
-    return vs.filter(function (v) { return /^fr/i.test(v.lang); });
-  }
-  function score(v) {   // qualité : Premium > Améliorée > standard
-    var s = 0;
-    if (/premium/i.test(v.name)) s += 100;
-    if (/enhanced|am[ée]lior/i.test(v.name)) s += 60;
-    if (/fr[-_]FR/i.test(v.lang)) s += 10;
-    if (/siri/i.test(v.name)) s += 5;
+  /* ---------- voix : synthèse ---------- */
+  let voixDispo = [];
+  function scoreVoix(v) {
+    const n = v.name.toLowerCase(); let s = 0;
+    if (/natural|premium|neural|enhanced|améliorée|amélioré|online/.test(n)) s += 10;
+    if (/google/.test(n)) s += 4;
+    if (/fr-fr/i.test(v.lang)) s += 2;
     return s;
   }
-  function choisirVoix() {
-    var fr = voixFr(), choisie = stock.get('voixNom');
-    if (choisie) { var c = fr.filter(function (v) { return v.name === choisie; })[0]; if (c) return c; }
-    return fr.slice().sort(function (a, b) { return score(b) - score(a); })[0] || null;
+  function chargerVoix() {
+    voixDispo = speechSynthesis.getVoices().filter(v => /^fr/i.test(v.lang)).sort((a, b) => scoreVoix(b) - scoreVoix(a));
+    const sel = $('voix'); sel.innerHTML = '';
+    voixDispo.forEach(v => { const o = document.createElement('option'); o.value = v.name; o.textContent = v.name + ' (' + v.lang + ')'; sel.appendChild(o); });
+    if (reglages.voix) sel.value = reglages.voix;
   }
-  function remplirVoix() {
-    var s = $('#champ-voix'); if (!s) return;
-    var courante = stock.get('voixNom') || '';
-    s.innerHTML = '';
-    var auto = el('option'); auto.value = ''; auto.textContent = 'Automatique (la plus naturelle installée)'; s.appendChild(auto);
-    voixFr().sort(function (a, b) { return score(b) - score(a); }).forEach(function (v) {
-      var o = el('option'); o.value = v.name; o.textContent = v.name + ' (' + v.lang + ')'; s.appendChild(o);
-    });
-    s.value = courante;
+  if ('speechSynthesis' in window) { chargerVoix(); speechSynthesis.onvoiceschanged = chargerVoix; }
+  function nettoyerPourVoix(t) {
+    return t.replace(/\*+/g, '').replace(/\bAr\b/g, 'ariary').replace(/€/g, ' euros').replace(/(\d) (?=\d{3}\b)/g, '$1');
   }
-  if (window.speechSynthesis) speechSynthesis.onvoiceschanged = remplirVoix;
-  var voixDebloquee = false;
-  function debloquerVoix() {   // iOS exige un premier son déclenché par un geste de l'utilisateur
-    if (voixDebloquee || !window.speechSynthesis) return;
-    voixDebloquee = true;
-    try { var u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) {}
+  function parler(t) {
+    if (!reglages.parler || !('speechSynthesis' in window) || !t) return;
+    stopParler();
+    const u = new SpeechSynthesisUtterance(nettoyerPourVoix(t));
+    u.lang = 'fr-FR'; u.rate = Number(reglages.vitesse) || 1;
+    const v = voixDispo.find(x => x.name === reglages.voix) || voixDispo[0];
+    if (v) { u.voice = v; u.lang = v.lang; }
+    speechSynthesis.speak(u);
   }
-  function parler(texte) {
-    if (!voixActive || !window.speechSynthesis || !texte) return;
-    speechSynthesis.cancel();
-    var u = new SpeechSynthesisUtterance(texte);
-    u.lang = 'fr-FR';
-    try { var v = choisirVoix(); if (v) u.voice = v; } catch (e) {}   // une voix qui pose problème ne doit jamais bloquer la réponse
-    try { speechSynthesis.speak(u); } catch (e) {}
-  }
+  function stopParler() { if ('speechSynthesis' in window) speechSynthesis.cancel(); }
+  function majVoixBtn() { $('voixBtn').textContent = reglages.parler ? '🔊' : '🔇'; }
+  $('voixBtn').onclick = () => { reglages.parler = !reglages.parler; store.set('reglages', reglages); majVoixBtn(); if (!reglages.parler) stopParler(); };
+  majVoixBtn();
 
-  /* ---------- envoi et réponses ---------- */
-  function majBouton() {
-    var b = $('#action');
-    var aTexte = $('#texte').value.trim().length > 0;
-    b.className = ecoute ? 'ecoute' : (occupe ? 'occupe' : '');
-    var nom = occupe ? 'loader' : ecoute ? 'stop' : aTexte ? 'send' : 'mic';
-    b.innerHTML = svg(nom, 22);
-    b.setAttribute('aria-label', occupe ? 'Patiente' : ecoute ? 'Arrêter' : aTexte ? 'Envoyer' : 'Parler');
-  }
+  /* ---------- voix : reconnaissance ---------- */
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = $('micBtn');
+  let reco = null, enregistreur = null, morceaux = [];
+  function finEcoute() { mic.classList.remove('rec'); }
 
-  function traiter(payload) {
-    occupe = true; majBouton();
-    var pensee = msgPensee();
-    return api(payload).then(function (r) {
-      pensee.remove();
-      if (r.ask) attente = { champ: r.ask.champ, pending: r.pending };
-      else if (r.ok) attente = null;
-      msgAssistant(r);
-      parler(r.parle);
-      if (r.auth === false) ouvrirReglages('Mot de passe refusé : corrige-le ci-dessous.');
-    }).catch(function (e) {
-      pensee.remove();
-      msgAssistant({ ok: false, text: e.message });
-    }).then(function () { occupe = false; majBouton(); });
-  }
-
-  function choisir(champ, option) {
-    if (occupe || !attente) return;
-    figerOptions();
-    msgUtilisateur(option.label);
-    traiter({ action: 'completer', pending: attente.pending, champ: champ, valeur: option.valeur });
-  }
-
-  function envoyer(texte) {
-    texte = (texte || '').trim();
-    if (!texte || occupe) return;
-    debloquerVoix();
-    retirerUndo(); figerOptions();
-    msgUtilisateur(texte);
-    $('#texte').value = ''; majBouton();
-    if (attente && attente.champ === 'montant') {
-      traiter({ action: 'completer', pending: attente.pending, champ: 'montant', valeur: texte });
-    } else {
-      attente = null;
-      traiter({ action: 'message', texte: texte });
-    }
-  }
-
-  /* ---------- reconnaissance vocale ---------- */
-  function demarrerEcoute() {
-    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { msgAssistant({ ok: false, text: 'Ce navigateur ne gère pas la reconnaissance vocale. Utilise Safari ou Chrome, ou écris ton message.' }); return; }
-    debloquerVoix();
-    if (window.speechSynthesis) speechSynthesis.cancel();
-    rec = new SR();
-    rec.lang = 'fr-FR'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 1;
-    var final = '', erreur = null, champ = $('#texte');
-    champ.value = ''; champ.placeholder = 'J\'écoute…';
-
-    rec.onresult = function (e) {
-      var interim = '';
-      for (var i = e.resultIndex; i < e.results.length; i++) {
-        var t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) final += t; else interim += t;
-      }
-      champ.value = final + interim;
+  async function ecouterNatif() {
+    reco = new SR(); reco.lang = 'fr-FR'; reco.interimResults = true; reco.continuous = false;
+    let final = '';
+    reco.onresult = e => {
+      let t = ''; for (const r of e.results) t += r[0].transcript;
+      $('saisie').value = t; if (e.results[e.results.length - 1].isFinal) final = t;
     };
-    rec.onerror = function (e) {
-      erreur = e.error;
-      var m = {
-        'not-allowed': 'Micro refusé : autorise le micro pour ce site dans les réglages de Safari.',
-        'service-not-allowed': 'Micro refusé : autorise le micro et la dictée dans les réglages de ton iPhone.',
-        'no-speech': 'Je n\'ai rien entendu. Réessaie.',
-        'audio-capture': 'Aucun micro détecté.',
-        'network': 'La reconnaissance vocale a besoin d\'Internet.'
-      }[e.error];
-      if (m) msgAssistant({ ok: false, text: m });
-    };
-    rec.onend = function () {
-      ecoute = false; champ.placeholder = 'Écris ou touche le micro';
-      var t = (final || champ.value).trim();
-      champ.value = t; majBouton();
-      if (!t) return;
-      if (relire) { champ.focus(); } else { envoyer(t); }
-    };
-    try { rec.start(); ecoute = true; majBouton(); }
-    catch (e) { ecoute = false; majBouton(); }
+    reco.onerror = e => { finEcoute(); reco = null; if (e.error === 'not-allowed' || e.error === 'service-not-allowed') ecouterEnregistrement(); };
+    reco.onend = () => { finEcoute(); reco = null; const t = final || $('saisie').value; if (reglages.auto && t.trim()) envoyer(t); };
+    reco.start(); mic.classList.add('rec');
   }
+
+  // Secours : on enregistre l'audio et c'est Gemini qui le comprend (gratuit aussi)
+  async function ecouterEnregistrement() {
+    try {
+      const flux = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = ['audio/webm', 'audio/mp4', 'audio/ogg'].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+      enregistreur = new MediaRecorder(flux, mime ? { mimeType: mime } : undefined); morceaux = [];
+      enregistreur.ondataavailable = e => morceaux.push(e.data);
+      enregistreur.onstop = async () => {
+        flux.getTracks().forEach(t => t.stop()); finEcoute();
+        const blob = new Blob(morceaux, { type: enregistreur.mimeType || 'audio/mp4' }); enregistreur = null;
+        if (blob.size < 2000) return;
+        const b64 = await new Promise(ok => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.readAsDataURL(blob); });
+        envoyer('', { mime: blob.type.split(';')[0], data: b64 });
+      };
+      enregistreur.start(); mic.classList.add('rec');
+    } catch (e) { finEcoute(); bulle('Micro indisponible : ' + e.message, 'ia', 'err'); }
+  }
+
+  mic.onclick = () => {
+    stopParler();
+    if (reco) { reco.stop(); return; }
+    if (enregistreur) { enregistreur.stop(); return; }
+    if (SR && !store.get('sansReconnaissanceNative', false)) {
+      try { ecouterNatif(); } catch { ecouterEnregistrement(); }
+    } else ecouterEnregistrement();
+  };
 
   /* ---------- réglages ---------- */
-  function ouvrirReglages(msg) {
-    $('#champ-url').value = stock.get('url') || '';
-    $('#champ-pass').value = stock.get('pass') || '';
-    $('#opt-relire').checked = relire;
-    remplirVoix();
-    $('#msg-reglages').textContent = msg || '';
-    $('#reglages').classList.add('ouvert');
+  function ouvrirReglages() {
+    $('url').value = reglages.url; $('pin').value = reglages.pin; $('vitesse').value = reglages.vitesse; $('auto').checked = reglages.auto;
+    chargerVoix(); $('reglages').showModal();
   }
-  function fermerReglages() { $('#reglages').classList.remove('ouvert'); }
-
-  $('#btn-reglages').onclick = function () { ouvrirReglages(); };
-  $('#fermer').onclick = fermerReglages;
-  $('#champ-voix').onchange = function () { if (this.value) stock.set('voixNom', this.value); else stock.del('voixNom'); };
-  $('#test-voix').onclick = function () {
-    debloquerVoix();
-    var ancienne = voixActive; voixActive = true;
-    parler('Bonjour. Il vous reste trois cent mille ariary en poche.');
-    voixActive = ancienne;
+  $('reglagesBtn').onclick = ouvrirReglages;
+  $('testVoix').onclick = () => { reglages.voix = $('voix').value; reglages.vitesse = Number($('vitesse').value); const p = reglages.parler; reglages.parler = true; parler('Bonjour Arif, ce mois-ci tu as dépensé 150 000 ariary en courses.'); reglages.parler = p; };
+  $('enregistrer').onclick = () => {
+    reglages = { ...reglages, url: $('url').value.trim(), pin: $('pin').value.trim(), voix: $('voix').value, vitesse: Number($('vitesse').value), auto: $('auto').checked };
+    store.set('reglages', reglages); $('reglages').close(); api({ action: 'libelles' });
   };
-  $('#opt-relire').onchange = function () { relire = this.checked; stock.set('relire', relire ? '1' : '0'); };
-  $('#oublier').onclick = function () {
-    stock.del('url'); stock.del('pass');
-    $('#champ-url').value = ''; $('#champ-pass').value = '';
-    $('#msg-reglages').textContent = 'Réglages effacés de cet appareil.';
-  };
-  $('#sauver').onclick = function () {
-    var url = $('#champ-url').value.trim(), pass = $('#champ-pass').value, msg = $('#msg-reglages');
-    if (!/^https:\/\/script\.google\.com\/macros\/s\/[^?\s]+\/exec$/.test(url)) {
-      msg.textContent = 'L\'adresse doit ressembler à https://script.google.com/macros/s/…/exec (sans « ?s= »).'; return;
-    }
-    if (!pass) { msg.textContent = 'Saisis le mot de passe.'; return; }
-    stock.set('url', url); stock.set('pass', pass);
-    msg.textContent = 'Test en cours…';
-    api({ action: 'ping' })
-      .then(function (r) {
-        if (r.ok) { msg.textContent = 'Connexion OK.'; setTimeout(fermerReglages, 700); }
-        else msg.textContent = r.text || 'Échec.';
-      })
-      .catch(function (e) { msg.textContent = e.message; });
-  };
-
-  /* ---------- mise en place ---------- */
-  function majVoixBtn() {
-    var b = $('#btn-voix');
-    b.innerHTML = svg(voixActive ? 'volume' : 'muet', 22);
-    b.setAttribute('aria-pressed', voixActive ? 'true' : 'false');
-    b.setAttribute('aria-label', voixActive ? 'Réponse vocale activée' : 'Réponse vocale coupée');
-  }
-  $('#btn-voix').onclick = function () {
-    voixActive = !voixActive; stock.set('voix', voixActive ? '1' : '0'); majVoixBtn();
-    if (!voixActive && window.speechSynthesis) speechSynthesis.cancel();
-  };
-  $('#btn-reglages').innerHTML = svg('reglages', 22);
-  majVoixBtn(); majBouton();
-
-  RACCOURCIS.forEach(function (r) {
-    var b = el('button', 'chip', svg(r.ic, 18) + '<span>' + r.label + '</span>');
-    b.type = 'button'; b.onclick = function () { envoyer(r.q); };
-    $('#raccourcis').appendChild(b);
-  });
-
-  $('#salut').textContent = new Date().getHours() < 18 ? 'Bonjour' : 'Bonsoir';
-  $('#texte').addEventListener('input', majBouton);
-  $('#texte').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); envoyer($('#texte').value); } });
-  $('#action').onclick = function () {
-    if (occupe) return;
-    if (ecoute && rec) { rec.stop(); return; }
-    if ($('#texte').value.trim()) envoyer($('#texte').value); else demarrerEcoute();
-  };
-
-  if (stock.get('url') && stock.get('pass')) api({ action: 'ping' }).catch(function () {});   // réveille le script
-  else ouvrirReglages('Première utilisation : renseigne l\'adresse du script et ton mot de passe.');
+  if (!reglages.url) ouvrirReglages(); else api({ action: 'libelles' });
 })();
 </script>
 </body>
